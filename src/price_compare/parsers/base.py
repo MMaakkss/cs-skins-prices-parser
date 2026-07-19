@@ -3,6 +3,7 @@ import re
 import time
 import unicodedata
 from abc import ABC, abstractmethod
+from decimal import Decimal
 
 import requests
 
@@ -127,18 +128,22 @@ class BaseParser(ABC):
                         weapon=listing.get("weapon"),
                         skin_name=listing.get("skin_name"),
                         exterior=listing.get("exterior"),
+                        icon_url=listing.get("icon_url"),
                         stattrak=listing.get("stattrak", False),
                         souvenir=listing.get("souvenir", False),
                     )
                     session.add(item)
                     session.flush()
+                elif not item.icon_url and listing.get("icon_url"):
+                    # Backfill the preview once a marketplace provides one.
+                    item.icon_url = listing["icon_url"]
 
                 session.add(PriceRecord(
                     item_id=item.id,
                     marketplace_id=marketplace.id,
-                    price=price,
+                    price=Decimal(str(price)),
                     volume=listing.get("volume"),
-                    currency=listing.get("currency", "USD"),
+                    price_type="ask",
                 ))
                 saved.append(listing)
 

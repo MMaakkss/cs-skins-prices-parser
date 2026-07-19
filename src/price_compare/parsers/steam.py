@@ -17,17 +17,12 @@ EXTERIOR_TAGS = {
     "BS": "tag_WearCategory4",
 }
 
-CURRENCY_MAP = {
-    "USD": 1,
-    "GBP": 2,
-    "EUR": 3,
-}
+# Prices are collected in USD only (Steam currency id 1, country US).
+STEAM_CURRENCY_ID = 1
+STEAM_COUNTRY_CODE = "US"
 
-COUNTRY_CODE_MAP = {
-    "USD": "US",
-    "GBP": "GB",
-    "EUR": "DE",
-}
+# Steam returns a relative icon path; prepend the CDN base for a usable URL.
+STEAM_IMAGE_BASE = "https://community.cloudflare.steamstatic.com/economy/image/"
 
 # Steam now rejects "non-browser" requests to the market endpoints with 429.
 # A full browser-like header set (Accept-*, Referer, X-Requested-With, the
@@ -54,10 +49,9 @@ class SteamParser(BaseParser):
     marketplace_name = "steam"
     base_url = "https://steamcommunity.com/market/"
 
-    def __init__(self, currency: str = "USD", proxy_pool=None):
+    def __init__(self, proxy_pool=None):
         super().__init__(STEAM_REQUEST_DELAY, proxy_pool)
         self.proxy_cooldown = STEAM_PROXY_COOLDOWN
-        self.currency = currency
         self.session.headers.update(STEAM_HEADERS)
 
     def fetch_listings(self, filters: dict | None = None, count: int | None = None) -> list[dict]:
@@ -106,14 +100,17 @@ class SteamParser(BaseParser):
 
         weapon, skin_name, exterior = self._parse_name(name)
 
+        icon = item.get("asset_description", {}).get("icon_url")
+        icon_url = f"{STEAM_IMAGE_BASE}{icon}" if icon else None
+
         return {
             "market_hash_name": name,
             "price": price,
             "volume": item.get("sell_listings", 0),
-            "currency": self.currency,
             "weapon": weapon,
             "skin_name": skin_name,
             "exterior": exterior,
+            "icon_url": icon_url,
             "stattrak": "StatTrak" in name,
             "souvenir": "Souvenir" in name,
         }
@@ -140,8 +137,8 @@ class SteamParser(BaseParser):
             "start": start,
             "sort_column": "popular",
             "sort_dir": "desc",
-            "currency": CURRENCY_MAP.get(self.currency, 1),
-            "cc": COUNTRY_CODE_MAP.get(self.currency, "US"),
+            "currency": STEAM_CURRENCY_ID,
+            "cc": STEAM_COUNTRY_CODE,
         }
         if "exterior" in filters:
             tag = EXTERIOR_TAGS.get(filters["exterior"].upper())

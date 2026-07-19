@@ -19,10 +19,8 @@ class DMarketParser(BaseParser):
     marketplace_name = "dmarket"
     base_url = "https://dmarket.com/"
 
-    def __init__(self, currency: str = "USD", proxy_pool=None):
+    def __init__(self, proxy_pool=None):
         super().__init__(DMARKET_REQUEST_DELAY, proxy_pool)
-        # Note: DMarket returns prices in USD only
-        self.currency = currency
         self._public_key = DMARKET_PUBLIC_KEY
         self._secret_key = DMARKET_SECRET_KEY
 
@@ -78,7 +76,7 @@ class DMarketParser(BaseParser):
                     "exterior": exterior,
                     "price": price,
                     "volume": None,
-                    "currency": "USD", # Note: DMarket returns prices in USD only
+                    "icon_url": item.get("image"),
                     "stattrak": "StatTrak" in name,
                     "souvenir": "Souvenir" in name,
                 }
@@ -96,7 +94,7 @@ class DMarketParser(BaseParser):
         filters = filters or {}
         params = {
             "gameId": "a8db",
-            "currency": self.currency,
+            "currency": "USD",  # DMarket returns prices in USD only
             "limit": min(count, 100),
             "orderBy": "price",
             "orderDir": "asc",

@@ -110,8 +110,9 @@ Arguments:
 | `--search`      | Search query by name                                 |
 | `--price-min`   | Min price in dollars, e.g. `1.5`                     |
 | `--price-max`   | Max price in dollars, e.g. `50.0`                    |
-| `--currency`    | Currency: `USD`, `GBP`, `EUR` (Steam only)           |
 | `--no-proxy`    | Disable the proxy pool for this run                  |
+
+All prices are collected and stored in **USD**.
 
 ### `prices` command — view saved data
 
@@ -144,10 +145,8 @@ python -m price_compare -v parse steam --count 50
   Trading API` and set `DMARKET_PUBLIC_KEY` / `DMARKET_SECRET_KEY` in `.env`. Without
   keys, DMarket parsing returns an empty result with a message in the log. Proxies are
   not used for DMarket — limits are counted per account, and requests go directly.
-- **DMarket always returns prices in USD** — the `--currency` argument has no effect on
-  its results; records are marked as `USD`. Multi-currency works only for Steam.
-- **No currency conversion is performed** — prices are stored in the currency they were
-  received in.
+- **All prices are USD.** Steam is always queried with `currency=1, cc=US`, DMarket
+  returns USD natively. There is no currency selection and no conversion.
 - **Steam requires "browser-like" requests.** The market endpoints (`search/render`)
   return `429` for "bare" requests (with only a `User-Agent`). A full set of browser
   headers is required (`Accept-*`, `Referer`, `X-Requested-With`, `Sec-*` / `sec-ch-ua`) —
@@ -175,8 +174,8 @@ requests across a pool of proxies with rotation.
   seconds, and the request is immediately retried through another IP. This eliminates
   long stalls on a single address at large `--count` values.
 - **Geo** — every exit IP has the region of its proxy subscription; this does not
-  affect price currency (Steam returns the currency based on the `currency`/`cc`
-  parameters, DMarket is always USD).
+  affect prices (Steam is always queried in USD via fixed `currency`/`cc`, DMarket
+  is always USD).
 
 > ⚠️ The proxy list file contains credentials and is added to `.gitignore` —
 > do not commit it.
@@ -207,11 +206,14 @@ price_compare/
 
 ### Data model
 
-- **marketplaces** — marketplaces (`id`, `name`, `url`).
+- **marketplaces** — marketplaces (`id`, `name`, `url`) plus a fee reference the API
+  reads: `sell_fee_percent`, `buy_fee_percent`, `payout_withdrawable`
+  (Steam wallet funds are not withdrawable → `false`).
 - **items** — unique items (`market_hash_name`, weapon, skin, exterior, StatTrak/Souvenir
-  flags).
-- **price_records** — price snapshots over time (`price`, `volume`, `currency`,
-  `recorded_at`), linked to an item and a marketplace. A new record on each run.
+  flags, `icon_url`).
+- **price_records** — price snapshots over time (`price` as USD `Numeric`, `volume`,
+  `price_type` (`ask`; `bid` reserved for a future phase), `recorded_at`), linked to an
+  item and a marketplace. A new record on each run.
 
 ---
 
@@ -219,7 +221,7 @@ price_compare/
 
 1. Create `src/price_compare/parsers/<name>.py` with a class that inherits from `BaseParser`.
 2. Set `marketplace_name` and `base_url`, and implement `fetch_listings()`, which returns
-   a list of dicts with the keys `market_hash_name`, `price`, `currency`, and optionally
-   `weapon`, `skin_name`, `exterior`, `volume`, `stattrak`, `souvenir`.
+   a list of dicts with the keys `market_hash_name`, `price` (USD), and optionally
+   `weapon`, `skin_name`, `exterior`, `icon_url`, `volume`, `stattrak`, `souvenir`.
 3. Register the class in `parser_map` inside `cli.py` and add it to the `choices` of the
    `marketplace` argument.

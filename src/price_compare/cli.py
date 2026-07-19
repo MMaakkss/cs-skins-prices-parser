@@ -65,6 +65,10 @@ def cmd_parse(args):
     if args.price_max is not None:
         filters["price_max"] = args.price_max
 
+    # --all overrides --count: pass count=None so the parsers page through
+    # every available listing instead of stopping at a fixed number.
+    count = None if args.all else args.count
+
     proxy_pool = _build_proxy_pool(args.no_proxy)
 
     # DMarket uses a signed, per-account API — rate limits are per API key, not
@@ -74,10 +78,13 @@ def cmd_parse(args):
         logger.info("DMarket uses API keys; proxy pool not applied to it")
         proxy_pool = None
 
-    parser = parser_cls(currency=args.currency, proxy_pool=proxy_pool)
-    logger.info("Parsing %s (count=%s, filters=%s)...", args.marketplace, args.count, filters)
+    parser = parser_cls(proxy_pool=proxy_pool)
+    logger.info(
+        "Parsing %s (count=%s, filters=%s)...",
+        args.marketplace, "all" if count is None else count, filters,
+    )
 
-    results = parser.run(filters=filters, count=args.count)
+    results = parser.run(filters=filters, count=count)
     logger.info("Saved %d items to database.", len(results))
 
 
@@ -105,13 +112,14 @@ def cmd_prices(args):
             print("No price records found.")
             return
 
-        print(f"{'Item':<45} {'Market':<10} {'Price':>10} {'Volume':>8} {'Date'}")
-        print("-" * 95)
+        print(f"{'Item':<45} {'Market':<10} {'Type':<5} {'Price(USD)':>11} {'Volume':>8} {'Date'}")
+        print("-" * 100)
         for record, item, marketplace in rows:
             print(
                 f"{item.market_hash_name:<45} "
                 f"{marketplace.name:<10} "
-                f"{record.price:>9.2f}{record.currency} "
+                f"{record.price_type:<5} "
+                f"${record.price:>9.2f} "
                 f"{record.volume or '-':>8} "
                 f"{record.recorded_at:%Y-%m-%d %H:%M}"
             )
@@ -128,12 +136,12 @@ def main():
     parse_cmd = subparsers.add_parser("parse", help="Parse prices from a marketplace")
     parse_cmd.add_argument("marketplace", choices=["steam", "dmarket"], help="Marketplace to parse")
     parse_cmd.add_argument("--count", type=int, default=100, help="Number of items to fetch")
+    parse_cmd.add_argument("--all", action="store_true", help="Fetch all available items (ignores --count)")
     parse_cmd.add_argument("--exterior", help="Filter by exterior (FN, MW, FT, WW, BS)")
     parse_cmd.add_argument("--weapon", help="Filter by weapon type (e.g. ak47, m4a1)")
     parse_cmd.add_argument("--search", help="Search query")
     parse_cmd.add_argument("--price-min", type=float, help="Min price in dollars (e.g. 1.5)")
     parse_cmd.add_argument("--price-max", type=float, help="Max price in dollars (e.g. 50.0)")
-    parse_cmd.add_argument("--currency", default="USD", help="Currency (USD, EUR, RUB)")
     parse_cmd.add_argument("--no-proxy", action="store_true", help="Disable the proxy pool for this run")
     parse_cmd.set_defaults(func=cmd_parse)
 
