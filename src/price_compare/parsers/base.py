@@ -21,6 +21,9 @@ USER_AGENT = (
 class BaseParser(ABC):
     marketplace_name: str
     base_url: str | None = None
+    # Whether the CLI should hand this parser the proxy pool. Marketplaces whose
+    # limits are per-account rather than per-IP set it to False and go direct.
+    use_proxy_pool: bool = True
 
     def __init__(self, request_delay: float, proxy_pool=None):
         self.request_delay = request_delay
@@ -28,6 +31,8 @@ class BaseParser(ABC):
         # How long a proxy is parked after a 429/error. Subclasses can raise it
         # (Steam bans IPs for hours, so a burned proxy should drop for the run).
         self.proxy_cooldown = PROXY_COOLDOWN
+        # Per-request timeout. Subclasses pulling multi-megabyte dumps raise it.
+        self.timeout = 15
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
 
@@ -60,7 +65,9 @@ class BaseParser(ABC):
             proxies = self.proxy_pool.get() if self.proxy_pool else None
             headers = self._auth_headers("GET", url)
             try:
-                resp = self.session.get(url, params=params, timeout=15, proxies=proxies, headers=headers)
+                resp = self.session.get(
+                    url, params=params, timeout=self.timeout, proxies=proxies, headers=headers
+                )
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code == 429:
@@ -143,7 +150,9 @@ class BaseParser(ABC):
                     marketplace_id=marketplace.id,
                     price=Decimal(str(price)),
                     volume=listing.get("volume"),
-                    price_type="ask",
+                    # Most parsers only report the lowest ask; a marketplace that
+                    # also exposes buy orders sets price_type="bid" on those.
+                    price_type=listing.get("price_type", "ask"),
                 ))
                 saved.append(listing)
 

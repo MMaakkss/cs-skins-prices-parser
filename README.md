@@ -7,6 +7,7 @@ Currently supported:
 
 - **Steam Community Market** — `steamcommunity.com/market`
 - **DMarket** — `api.dmarket.com`
+- **market.csgo.com** (TM Market) — `market.csgo.com/api/v2` (asks **and** buy orders)
 
 The architecture is designed for easy addition of new marketplaces: just inherit from
 `BaseParser` and implement a single method, `fetch_listings()`.
@@ -15,8 +16,11 @@ The architecture is designed for easy addition of new marketplaces: just inherit
 
 ## Features
 
-- Parsing prices from Steam and DMarket with pagination and retries on errors.
+- Parsing prices from Steam, DMarket and market.csgo.com with pagination and retries
+  on errors.
 - Filters: exterior (wear), weapon type, search query, price range, count.
+- Both sides of the book where a marketplace publishes them: lowest ask (`ask`) and
+  highest buy order (`bid`) — market.csgo.com provides both.
 - **History accumulation**: each run adds a new price snapshot for an item —
   past values are not overwritten, which makes it possible to analyze trends.
 - Item name normalization (a unified form without altering the name itself), so that
@@ -68,6 +72,8 @@ cp .env.example .env
 | `DMARKET_REQUEST_DELAY`  | Delay between requests to DMarket (sec)      | `1.0`   |
 | `DMARKET_PUBLIC_KEY`     | Trading API public key (64 hex)              | — (required for DMarket) |
 | `DMARKET_SECRET_KEY`     | Trading API secret key (128 hex)             | — (required for DMarket) |
+| `MARKET_CSGO_REQUEST_DELAY` | Min interval between market.csgo.com requests (sec) | `0.25` |
+| `MARKET_CSGO_API_KEY`    | market.csgo.com key — **not used** by the parser | — |
 | `PROXY_LIST_FILE`        | Path to the proxy list                       | `proxy_list.txt` |
 | `PROXY_COOLDOWN`         | Proxy cooldown after a 429/error (sec)       | `60.0`  |
 | `PROXY_ENABLED`          | Explicit on/off override (`true`/`false`)    | based on file presence |
@@ -97,16 +103,17 @@ python -m price_compare --help
 ```bash
 python -m price_compare parse steam --count 200 --weapon ak47 --exterior FT
 python -m price_compare parse dmarket --search "AWP | Asiimov" --price-max 120
+python -m price_compare parse market_csgo --count 500
 ```
 
 Arguments:
 
 | Argument        | Description                                          |
 |-----------------|------------------------------------------------------|
-| `marketplace`   | `steam` or `dmarket` (required)                      |
+| `marketplace`   | `steam`, `dmarket` or `market_csgo` (required)       |
 | `--count`       | How many items to collect (default 100)              |
-| `--exterior`    | Wear: `FN`, `MW`, `FT`, `WW`, `BS` (Steam only)      |
-| `--weapon`      | Weapon type, e.g. `ak47`, `m4a1` (Steam only)        |
+| `--exterior`    | Wear: `FN`, `MW`, `FT`, `WW`, `BS` (Steam, market.csgo.com) |
+| `--weapon`      | Weapon type, e.g. `ak47`, `m4a1` (Steam, market.csgo.com) |
 | `--search`      | Search query by name                                 |
 | `--price-min`   | Min price in dollars, e.g. `1.5`                     |
 | `--price-max`   | Max price in dollars, e.g. `50.0`                    |
@@ -124,7 +131,7 @@ python -m price_compare prices "AK-47" --marketplace steam --limit 20
 | Argument        | Description                                   |
 |-----------------|-----------------------------------------------|
 | `name`          | Partial filter by item name                   |
-| `--marketplace` | Filter by marketplace (`steam`, `dmarket`)    |
+| `--marketplace` | Filter by marketplace (`steam`, `dmarket`, `market_csgo`) |
 | `--limit`       | Max rows (default 50)                         |
 
 ### Logging
@@ -145,8 +152,32 @@ python -m price_compare -v parse steam --count 50
   Trading API` and set `DMARKET_PUBLIC_KEY` / `DMARKET_SECRET_KEY` in `.env`. Without
   keys, DMarket parsing returns an empty result with a message in the log. Proxies are
   not used for DMarket — limits are counted per account, and requests go directly.
+- **market.csgo.com needs no API key.** It publishes its whole CS2 price list as two
+  static USD files — `api/v2/prices/USD.json` (lowest ask per item, ~27k items) and
+  `api/v2/prices/orders/USD.json` (highest buy order per item, ~26k items) — and both
+  are public. Its keyed endpoints (`search-item-by-hash-name` and friends) quote in the
+  **account's own currency** (RUB by default) in minor units, which the USD-only model
+  cannot store, so they are not used and `MARKET_CSGO_API_KEY` stays unused.
+  Consequences of the static-dump design:
+  - A run is exactly **two requests**, so there is no pagination and the marketplace's
+    hard limit (**more than 5 req/s deletes the API key**) is never approached. The
+    parser still enforces `MARKET_CSGO_REQUEST_DELAY` between requests, retries
+    included. No proxies — limits are per account, not per IP.
+  - Filters (`--search`, `--weapon`, `--exterior`, `--price-min/max`) are applied
+    **locally** to the downloaded dump; the files take no query parameters.
+  - `--count N` returns the N items with the most **open buy orders**, not an
+    alphabetical slice. Buy orders measure real demand; the number of items on sale
+    measures the opposite, since worthless skins are the ones that pile up unsold.
+    Items nobody bids on are ordered by price, so the tail is valuable-but-illiquid
+    rather than sub-cent dust.
+  - This parser writes **two records per item** — one `ask` and one `bid` — where
+    Steam and DMarket write one `ask`. Buy orders are only stored for items that
+    survived the filters, so both sides always describe the same item set.
+  - The price dumps carry no images, so `icon_url` is left for another marketplace
+    to backfill.
 - **All prices are USD.** Steam is always queried with `currency=1, cc=US`, DMarket
-  returns USD natively. There is no currency selection and no conversion.
+  returns USD natively, market.csgo.com is read from its USD files. There is no
+  currency selection and no conversion.
 - **Steam requires "browser-like" requests.** The market endpoints (`search/render`)
   return `429` for "bare" requests (with only a `User-Agent`). A full set of browser
   headers is required (`Accept-*`, `Referer`, `X-Requested-With`, `Sec-*` / `sec-ch-ua`) —
@@ -197,7 +228,8 @@ price_compare/
 │   └── parsers/
 │       ├── base.py              # BaseParser: DB persistence, name normalization
 │       ├── steam.py             # SteamParser
-│       └── dmarket.py           # DMarketParser
+│       ├── dmarket.py           # DMarketParser
+│       └── market_csgo.py       # MarketCsgoParser (ask + bid)
 ├── docker-compose.yml           # PostgreSQL
 ├── alembic.ini
 ├── requirements.txt
@@ -212,8 +244,9 @@ price_compare/
 - **items** — unique items (`market_hash_name`, weapon, skin, exterior, StatTrak/Souvenir
   flags, `icon_url`).
 - **price_records** — price snapshots over time (`price` as USD `Numeric`, `volume`,
-  `price_type` (`ask`; `bid` reserved for a future phase), `recorded_at`), linked to an
-  item and a marketplace. A new record on each run.
+  `price_type` (`ask` = lowest listing, `bid` = highest buy order), `recorded_at`),
+  linked to an item and a marketplace. A new record on each run. Steam and DMarket
+  produce `ask` only; market.csgo.com produces both.
 
 ---
 

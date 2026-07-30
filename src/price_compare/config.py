@@ -16,6 +16,9 @@ DATABASE_URL = os.getenv(
 # Steam market endpoints tolerate ~1 request / 4s per IP; keep a safe margin.
 STEAM_REQUEST_DELAY = float(os.getenv("STEAM_REQUEST_DELAY", "4.0"))
 DMARKET_REQUEST_DELAY = float(os.getenv("DMARKET_REQUEST_DELAY", "1.0"))
+# market.csgo.com deletes an API key that sends more than 5 requests per second;
+# 0.25s between requests (4 req/s) keeps a margin.
+MARKET_CSGO_REQUEST_DELAY = float(os.getenv("MARKET_CSGO_REQUEST_DELAY", "0.25"))
 
 # DMarket Trading API keys (required — DMarket's market API needs signed requests).
 DMARKET_PUBLIC_KEY = os.getenv("DMARKET_PUBLIC_KEY", "")

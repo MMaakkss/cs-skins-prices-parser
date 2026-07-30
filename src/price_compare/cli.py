@@ -7,6 +7,13 @@ from price_compare.config import PROXY_ENABLED, PROXY_LIST_FILE
 from price_compare.parsers.proxy import ProxyPool
 from price_compare.parsers.steam import SteamParser
 from price_compare.parsers.dmarket import DMarketParser
+from price_compare.parsers.market_csgo import MarketCsgoParser
+
+MARKETPLACES = {
+    "steam": SteamParser,
+    "dmarket": DMarketParser,
+    "market_csgo": MarketCsgoParser,
+}
 
 logger = logging.getLogger("price_compare")
 
@@ -40,16 +47,11 @@ def _build_proxy_pool(no_proxy: bool):
 
 
 def cmd_parse(args):
-    parser_map = {
-        "steam": SteamParser,
-        "dmarket": DMarketParser,
-    }
-
-    parser_cls = parser_map.get(args.marketplace)
+    parser_cls = MARKETPLACES.get(args.marketplace)
     if not parser_cls:
         logger.error(
             "Unknown marketplace: %s. Available: %s",
-            args.marketplace, ", ".join(parser_map),
+            args.marketplace, ", ".join(MARKETPLACES),
         )
         sys.exit(1)
 
@@ -71,11 +73,10 @@ def cmd_parse(args):
 
     proxy_pool = _build_proxy_pool(args.no_proxy)
 
-    # DMarket uses a signed, per-account API — rate limits are per API key, not
-    # per IP, and rotating one key across many residential IPs can trip
-    # anti-fraud. So it always goes direct; the proxy pool is for Steam.
-    if args.marketplace == "dmarket" and proxy_pool is not None:
-        logger.info("DMarket uses API keys; proxy pool not applied to it")
+    # Marketplaces rate-limited per account rather than per IP gain nothing from
+    # rotating exit nodes, so they opt out. The proxy pool is really for Steam.
+    if proxy_pool is not None and not parser_cls.use_proxy_pool:
+        logger.info("%s is rate-limited per account; proxy pool not applied", args.marketplace)
         proxy_pool = None
 
     parser = parser_cls(proxy_pool=proxy_pool)
@@ -134,7 +135,7 @@ def main():
 
     # parse command
     parse_cmd = subparsers.add_parser("parse", help="Parse prices from a marketplace")
-    parse_cmd.add_argument("marketplace", choices=["steam", "dmarket"], help="Marketplace to parse")
+    parse_cmd.add_argument("marketplace", choices=list(MARKETPLACES), help="Marketplace to parse")
     parse_cmd.add_argument("--count", type=int, default=100, help="Number of items to fetch")
     parse_cmd.add_argument("--all", action="store_true", help="Fetch all available items (ignores --count)")
     parse_cmd.add_argument("--exterior", help="Filter by exterior (FN, MW, FT, WW, BS)")
