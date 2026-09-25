@@ -40,7 +40,7 @@ The architecture is designed for easy addition of new marketplaces: just inherit
 | Database       | PostgreSQL 16                       |
 | ORM            | SQLAlchemy 2.x                      |
 | Migrations     | Alembic                             |
-| DB driver      | `psycopg2-binary`                   |
+| DB driver      | `psycopg` 3                         |
 | Configuration  | `python-dotenv` + environment vars  |
 | Infrastructure | Docker Compose (PostgreSQL)         |
 
@@ -66,7 +66,7 @@ cp .env.example .env
 
 | Variable                 | Purpose                                     | Default |
 |--------------------------|---------------------------------------------|---------|
-| `DATABASE_URL`           | PostgreSQL connection string                | `postgresql://postgres:postgres@localhost:5432/price_compare` |
+| `DATABASE_URL`           | PostgreSQL connection string (name the driver: `+psycopg`) | `postgresql+psycopg://postgres:postgres@localhost:5432/price_compare` |
 | `STEAM_REQUEST_DELAY`    | Delay between requests to Steam (sec)        | `4.0`   |
 | `STEAM_ACCEPT_ENCODING`  | The `Accept-Encoding` string Steam's rate limit is keyed by | `gzip;q=0.97, deflate` |
 | `DMARKET_REQUEST_DELAY`  | Delay between requests to DMarket (sec)      | `1.0`   |

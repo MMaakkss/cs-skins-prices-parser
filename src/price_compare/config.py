@@ -8,9 +8,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+# The `+psycopg` driver is spelled out on purpose: a bare `postgresql://` URL
+# resolves to whatever DBAPI the installed SQLAlchemy defaults to, and that
+# default changed in 2.1.
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/price_compare",
+    "postgresql+psycopg://postgres:postgres@localhost:5432/price_compare",
 )
 
 # Steam's market limit is not per IP: the budget is keyed by the exact

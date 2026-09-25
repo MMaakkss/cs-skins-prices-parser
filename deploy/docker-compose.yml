@@ -52,7 +52,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       STEAM_REQUEST_DELAY: ${STEAM_REQUEST_DELAY:-4.0}
       # The identity of this project's rate-limit bucket. It must stay byte for
       # byte the same between runs, so it is pinned here rather than left to
