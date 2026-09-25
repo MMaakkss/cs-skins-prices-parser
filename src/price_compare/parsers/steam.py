@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -55,9 +56,18 @@ class SteamParser(BaseParser):
     # refresh the block (§4), so the pass ends instead of knocking.
     retry_on_rate_limit = False
 
+    # Part of the resume key. An offset means "position N in this order", so an
+    # offset recorded under a different order points somewhere else entirely and
+    # must not be reused — changing the order here orphans the old offsets
+    # instead of silently resuming into the wrong part of the market.
+    PAGE_ORDER = "name-asc"
+
     def __init__(self):
         super().__init__(STEAM_REQUEST_DELAY)
         self.session.headers.update(STEAM_HEADERS)
+
+    def _resume_key(self, filters: dict) -> str:
+        return json.dumps({"order": self.PAGE_ORDER, "filters": filters}, sort_keys=True)
 
     def fetch_listings(self, filters: dict | None = None, count: int | None = None) -> list[dict]:
         """Collect a whole pass into one list.
@@ -207,8 +217,13 @@ class SteamParser(BaseParser):
             "appid": 730,
             "norender": 1,
             "start": start,
-            "sort_column": "popular",
-            "sort_dir": "desc",
+            # Sorted by name, not popularity. Popularity is recomputed between
+            # requests, so pages overlapped: a full pass spent 21% of its
+            # requests re-fetching items it already had, and missed an item for
+            # each duplicate (docs/steam-rate-limits.md §9). A name order is
+            # stable, so page N holds the same items on every request.
+            "sort_column": "name",
+            "sort_dir": "asc",
             "currency": STEAM_CURRENCY_ID,
             "cc": STEAM_COUNTRY_CODE,
         }

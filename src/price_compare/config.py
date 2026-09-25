@@ -18,9 +18,10 @@ DATABASE_URL = os.getenv(
 
 # Steam's market limit is not per IP: the budget is keyed by the exact
 # Accept-Encoding string and shared globally (docs/steam-rate-limits.md).
-# The delay is a pace that keeps the pass inside that budget; the refill rate
-# it should be matched to is still being measured on the server.
-STEAM_REQUEST_DELAY = float(os.getenv("STEAM_REQUEST_DELAY", "4.0"))
+# The budget refills at ~0.223 req/s — one request per 4.48s — measured over a
+# three-hour pass (§8). 4.0s looked conservative and was in fact a 4% deficit
+# that killed the pass at 70% of the market; 4.5s leaves ~10% of headroom.
+STEAM_REQUEST_DELAY = float(os.getenv("STEAM_REQUEST_DELAY", "4.5"))
 # The identity of this project's own rate-limit bucket. It must stay literally
 # different from the client defaults (`requests` sends `gzip, deflate, br`,
 # which every other scraper using the library is already emptying) and it must

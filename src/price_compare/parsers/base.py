@@ -210,9 +210,12 @@ class BaseParser(ABC):
 
         return saved, skipped
 
-    @staticmethod
-    def _resume_key(filters: dict) -> str:
-        """Canonical form of a filter set, used to key the resume point."""
+    def _resume_key(self, filters: dict) -> str:
+        """Canonical form of a filter set, used to key the resume point.
+
+        A parser whose offsets only make sense under one page order overrides
+        this to include that order.
+        """
         return json.dumps(filters, sort_keys=True)
 
     @staticmethod

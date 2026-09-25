@@ -67,7 +67,7 @@ cp .env.example .env
 | Variable                 | Purpose                                     | Default |
 |--------------------------|---------------------------------------------|---------|
 | `DATABASE_URL`           | PostgreSQL connection string (name the driver: `+psycopg`) | `postgresql+psycopg://postgres:postgres@localhost:5432/price_compare` |
-| `STEAM_REQUEST_DELAY`    | Delay between requests to Steam (sec)        | `4.0`   |
+| `STEAM_REQUEST_DELAY`    | Delay between requests to Steam (sec); the budget refills at one request per 4.48 s | `4.5`   |
 | `STEAM_ACCEPT_ENCODING`  | The `Accept-Encoding` string Steam's rate limit is keyed by | `gzip;q=0.97, deflate` |
 | `DMARKET_REQUEST_DELAY`  | Delay between requests to DMarket (sec)      | `1.0`   |
 | `DMARKET_PUBLIC_KEY`     | Trading API public key (64 hex)              | — (required for DMarket) |
@@ -108,7 +108,7 @@ Arguments:
 | Argument        | Description                                          |
 |-----------------|------------------------------------------------------|
 | `marketplace`   | `steam`, `dmarket` or `market_csgo` (required)       |
-| `--count`       | How many items to collect (default 100)              |
+| `--count`       | How many items to collect (default 100). Steam pages alphabetically, so this is the first N by name, not the N most popular |
 | `--exterior`    | Wear: `FN`, `MW`, `FT`, `WW`, `BS` (Steam, market.csgo.com) |
 | `--weapon`      | Weapon type, e.g. `ak47`, `m4a1` (Steam, market.csgo.com) |
 | `--search`      | Search query by name                                 |

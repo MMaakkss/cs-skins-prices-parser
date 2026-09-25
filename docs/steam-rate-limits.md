@@ -159,10 +159,15 @@ also an item the pass never reached. Verified on a narrow filter too: one weapon
 exterior returned 108 positions for 83 distinct names, with page boundaries repeating
 from `start=40` onwards, while the first four pages were clean.
 
-The fix is a deterministic order (`sort_column=name&sort_dir=asc`), which costs one
-thing: `--count N` stops meaning "the N most popular" and starts meaning "the first N
-alphabetically". At 21% waste this is the single cheapest improvement available to the
-pass — worth more than any endpoint change measured here.
+The parser now sorts by name (`sort_column=name&sort_dir=asc`), which costs one thing:
+`--count N` means "the first N alphabetically" rather than "the N most popular". At 21%
+waste this was the cheapest improvement available to the pass — worth more than any
+endpoint change measured here.
+
+One consequence of the switch: a resume offset means "position N **in this order**", so
+the offsets recorded under the old one point somewhere else entirely. `SteamParser`
+therefore writes the page order into the resume key, which orphans the old rows instead
+of resuming into the wrong part of the market.
 
 ## What is still unknown
 
