@@ -12,7 +12,7 @@ Measured **2026-09-25** on a 3.7 GB VPS, Postgres 18 in the same compose project
 |---|---|---|---|---|
 | `market_csgo` | 2 | 52,710 | 2 m 11 s | 27,698 ask + 25,084 bid, 72 skipped on a zero price |
 | `steam` (narrow: one weapon, one exterior) | 3 | 28 | 13 s | `--count 30`, 2 skipped |
-| `steam` (full market) | ~3,548 | ~35,000 | ~4 h at a 4 s delay | not yet run to completion |
+| `steam` (full market, attempt at a 4 s delay) | 2,497 | 24,654 | 2 h 59 m | stopped by a 429 at 70%; see [`steam-rate-limits.md`](steam-rate-limits.md) §8 |
 
 `market_csgo` spent **2 seconds** of those 131 on the network — both price dumps
 arrive in two requests. Everything else was database work.
@@ -30,9 +30,21 @@ known: load the existing names for a batch in one query instead of one per row.
 For Steam the cost is invisible — ~35,000 rows spread across ~3,548 page
 commits, against four hours of deliberately rate-limited fetching.
 
+## A Steam pass does not fit in one sitting at a 4 s delay
+
+The first full attempt reached `start=24970` of ~35,520 before the budget ran out. That
+is not a failure mode to fix in code — the pace was wrong, and §8 of the rate-limit notes
+now gives the arithmetic for a pace that finishes. Two operational consequences:
+
+- The tail of the market is priced by the **next** run, which resumes from the recorded
+  offset. Nothing has to be re-fetched.
+- Of the 24,654 rows written, only 19,473 were distinct items: the endpoint's popularity
+  ordering repeats items across pages (§9). Budget spent on duplicates is budget the tail
+  never sees.
+
 ## Database growth
 
-After one `market_csgo` pass plus a narrow Steam run: **27,701 items, 23 MB**.
+After one `market_csgo` pass and 70% of a Steam pass: **32,634 items, 36 MB**.
 A daily full pass of both marketplaces adds roughly 5–8 MB, so on the order of
 2 GB a year. Worth a `pg_dump` in cron long before it is worth worrying about
 disk.

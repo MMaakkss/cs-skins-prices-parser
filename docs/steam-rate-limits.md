@@ -117,15 +117,62 @@ check 5–8 names against `priceoverview`. `Last-Modified` proves nothing. The s
 still has to be run against the paid aggregators (steamdataapi.com, steamwebapi.com) if
 they are ever considered.
 
+## 8. The refill rate, measured on a full pass (2026-09-25)
+
+A pass from the server at `STEAM_REQUEST_DELAY=4.0` — 4.30 s per request including the
+request itself — ran **2,497 successful requests in 10,745 s** (2 h 59 m) and took a 429
+on request #2,498, at `start=24970`, about 70% of the way through the market.
+
+Together with the cold bucket of 100 tokens from §2, that pins the refill rate:
+
+```
+100 + r × 10,745 s = 2,497   →   r ≈ 0.223 req/s   (one request per 4.48 s)
+```
+
+The model then predicts the failure exactly, which is the reason to trust it: drawing
+0.2324 req/s against a refill of 0.2231 drains the 100-token buffer in
+100 / 0.0093 ≈ 10,750 s. The 429 arrived at 10,745 s.
+
+What follows for the pace:
+
+- **4.0 s is slightly too fast.** The deficit is only 4%, but it is a deficit, so the
+  pass always dies — just late enough to look like it was working.
+- A full 3,553-page pass needs a cycle of at least **4.36 s** (`100 + 0.223 × 3553c ≥
+  3553`). That is the break-even, not a setting to use.
+- With margin: **5.0 s** gives a ~5.2 h pass and a comfortable surplus; 4.5 s gives
+  ~4.7 h and about 10% headroom.
+- The cold bucket only matters for the first seven minutes. After that the pass is
+  living entirely on refill, which is why the pace, not the starting credit, decides
+  whether it finishes.
+
+The block itself behaved as §4 describes: the pass stopped on the first 429 without
+retrying, kept all 24,654 records it had written, and recorded `next_start = 24970`.
+
+## 9. Popularity ordering is unstable deeper in the list
+
+The same pass traversed 24,970 positions and wrote 24,654 priced rows — but only
+**19,473 distinct names**. 21% of the requests re-fetched an item already seen, the worst
+of them five times over.
+
+`sort_column=popular` reshuffles between requests, so pages overlap; every duplicate is
+also an item the pass never reached. Verified on a narrow filter too: one weapon and one
+exterior returned 108 positions for 83 distinct names, with page boundaries repeating
+from `start=40` onwards, while the first four pages were clean.
+
+The fix is a deterministic order (`sort_column=name&sort_dir=asc`), which costs one
+thing: `--count N` stops meaning "the N most popular" and starts meaning "the first N
+alphabetically". At 21% waste this is the single cheapest improvement available to the
+pass — worth more than any endpoint change measured here.
+
 ## What is still unknown
 
-1. **The refill rate of `search/render`** — the one number needed to size a full-market
-   pass. 100 tokens from cold is measured; how fast they come back is not. A pass is
-   3,548 requests, so the answer is the difference between ~36 minutes and ~1.5 days.
-2. **How long a block lasts** once triggered. Known to exceed 2 minutes of silence.
-3. Whether the per-string budget varies by time of day, as third-party reports suggest
-   for other Steam endpoints.
+1. **How long a block lasts** once triggered. Known to exceed 2 minutes of silence; the
+   pass of §8 was not probed again afterwards, so the recovery time is still open.
+2. Whether the per-string budget varies by time of day, as third-party reports suggest
+   for other Steam endpoints. §8 measured one afternoon pass; a night pass at the same
+   pace would answer it.
+3. Whether the refill rate is steady or bursty. The linear model of §8 fits one pass to
+   within five seconds, which is suggestive but not proof.
 
-Item 1 is meant to be answered by the parser itself: it logs a line per request (index,
-`start` offset, status), so a full pass on the server either completes — putting a floor
-under the refill rate — or records exactly where the 429 landed.
+The refill rate itself — the number this file used to be missing — is answered in §8:
+**0.223 req/s**, one request per 4.48 s.
