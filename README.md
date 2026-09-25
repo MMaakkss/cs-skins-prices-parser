@@ -68,15 +68,12 @@ cp .env.example .env
 |--------------------------|---------------------------------------------|---------|
 | `DATABASE_URL`           | PostgreSQL connection string                | `postgresql://postgres:postgres@localhost:5432/price_compare` |
 | `STEAM_REQUEST_DELAY`    | Delay between requests to Steam (sec)        | `4.0`   |
-| `STEAM_PROXY_COOLDOWN`   | Proxy parking after a Steam 429 (sec)        | `1800.0` |
+| `STEAM_ACCEPT_ENCODING`  | The `Accept-Encoding` string Steam's rate limit is keyed by | `gzip;q=0.97, deflate` |
 | `DMARKET_REQUEST_DELAY`  | Delay between requests to DMarket (sec)      | `1.0`   |
 | `DMARKET_PUBLIC_KEY`     | Trading API public key (64 hex)              | — (required for DMarket) |
 | `DMARKET_SECRET_KEY`     | Trading API secret key (128 hex)             | — (required for DMarket) |
 | `MARKET_CSGO_REQUEST_DELAY` | Min interval between market.csgo.com requests (sec) | `0.25` |
 | `MARKET_CSGO_API_KEY`    | market.csgo.com key — **not used** by the parser | — |
-| `PROXY_LIST_FILE`        | Path to the proxy list                       | `proxy_list.txt` |
-| `PROXY_COOLDOWN`         | Proxy cooldown after a 429/error (sec)       | `60.0`  |
-| `PROXY_ENABLED`          | Explicit on/off override (`true`/`false`)    | based on file presence |
 
 ### 3. Database
 
@@ -117,7 +114,6 @@ Arguments:
 | `--search`      | Search query by name                                 |
 | `--price-min`   | Min price in dollars, e.g. `1.5`                     |
 | `--price-max`   | Max price in dollars, e.g. `50.0`                    |
-| `--no-proxy`    | Disable the proxy pool for this run                  |
 
 All prices are collected and stored in **USD**.
 
@@ -145,13 +141,65 @@ python -m price_compare -v parse steam --count 50
 
 ---
 
+## Deployment
+
+The parser runs on a VPS as its own compose project (`cs-parser`): GitHub
+Actions builds the image, pushes it to GHCR, then pins that exact sha on the
+server over SSH. The project is self-contained — its own Postgres, volume and
+network — so the same compose file runs unchanged on a laptop.
+
+- `Dockerfile` — the image. A pass is a batch job, so the container runs one CLI
+  invocation and exits.
+- `deploy/docker-compose.yml` — what lives at `/home/ubuntu/cs-parser/` on the
+  VPS: `postgres` (kept running) and `parser` (run per pass, then gone).
+- `deploy/.env.example` — template for `/home/ubuntu/cs-parser/.env`.
+- `.github/workflows/deploy.yml` — manual trigger (Actions → deploy → Run
+  workflow). Builds, pushes, pins the sha into `.env` and runs
+  `alembic upgrade head`. It does **not** start a pass.
+
+There is one environment, not a prod/stage pair. A pass is priced in Steam's
+rate-limit budget, and that budget is keyed by the `Accept-Encoding` string and
+shared globally — a second environment would either draw down the first one's
+budget or need a second string, which is the fan-out the measurements warn
+against ([`docs/steam-rate-limits.md`](docs/steam-rate-limits.md) §1). Schema
+changes and parser logic are verified against a throwaway local stack instead:
+the compose file runs as-is on a laptop.
+
+Repository secrets the workflow needs: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`.
+
+### Running a pass
+
+Deploying only updates the image and the schema. A pass is started by hand,
+because a full one is ~3,548 requests at `STEAM_REQUEST_DELAY` seconds apart:
+
+```bash
+ssh <your-server>
+cd /home/ubuntu/cs-parser
+COMPOSE="docker compose -p cs-parser --env-file .env -f docker-compose.yml"
+
+$COMPOSE run --rm parser parse steam --all          # full market, ~4 hours
+$COMPOSE run --rm parser parse steam --count 100    # a quick slice off the top
+$COMPOSE run --rm parser parse market_csgo --all    # two requests, seconds
+$COMPOSE run --rm parser prices "AK-47" --limit 20  # read back what was saved
+```
+
+A pass cut short by a `429` keeps everything it collected and records where it
+stopped, so the next `--all` run continues from that offset instead of
+restarting at 0.
+
+Each request writes a line — `steam request #N: start=… status=200 items=10` —
+so `docker logs` (or whatever collector the host runs) carries the raw material
+for sizing a safe request delay.
+
+---
+
 ## Notes and limitations
 
 - **DMarket requires Trading API keys.** DMarket's public market API has moved to
   signed requests (Ed25519). Generate a key pair at `dmarket.com → Settings →
   Trading API` and set `DMARKET_PUBLIC_KEY` / `DMARKET_SECRET_KEY` in `.env`. Without
-  keys, DMarket parsing returns an empty result with a message in the log. Proxies are
-  not used for DMarket — limits are counted per account, and requests go directly.
+  keys, DMarket parsing returns an empty result with a message in the log. Limits are
+  counted per account, and requests go directly.
 - **market.csgo.com needs no API key.** It publishes its whole CS2 price list as two
   static USD files — `api/v2/prices/USD.json` (lowest ask per item, ~27k items) and
   `api/v2/prices/orders/USD.json` (highest buy order per item, ~26k items) — and both
@@ -162,7 +210,7 @@ python -m price_compare -v parse steam --count 50
   - A run is exactly **two requests**, so there is no pagination and the marketplace's
     hard limit (**more than 5 req/s deletes the API key**) is never approached. The
     parser still enforces `MARKET_CSGO_REQUEST_DELAY` between requests, retries
-    included. No proxies — limits are per account, not per IP.
+    included.
   - Filters (`--search`, `--weapon`, `--exterior`, `--price-min/max`) are applied
     **locally** to the downloaded dump; the files take no query parameters.
   - `--count N` returns the N items with the most **open buy orders**, not an
@@ -178,38 +226,22 @@ python -m price_compare -v parse steam --count 50
 - **All prices are USD.** Steam is always queried with `currency=1, cc=US`, DMarket
   returns USD natively, market.csgo.com is read from its USD files. There is no
   currency selection and no conversion.
-- **Steam requires "browser-like" requests.** The market endpoints (`search/render`)
-  return `429` for "bare" requests (with only a `User-Agent`). A full set of browser
-  headers is required (`Accept-*`, `Referer`, `X-Requested-With`, `Sec-*` / `sec-ch-ua`) —
-  these are set in `SteamParser`. Additionally, Steam rate-limits by IP (~1 request /
-  4 sec): `STEAM_REQUEST_DELAY` holds a pause between pages, and a proxy that catches a
-  `429` is parked for `STEAM_PROXY_COOLDOWN` seconds, yielding to another IP from the
-  pool. With residential proxies and browser headers, Steam collection works reliably.
+- **Steam's rate limit is keyed by `Accept-Encoding`, not by IP.** The budget for
+  `search/render` belongs to the exact header string and is shared by everyone sending
+  it, so the `requests` default (`gzip, deflate, br`) draws from a permanently exhausted
+  bucket, while any literally different value is a private one — that is what
+  `STEAM_ACCEPT_ENCODING` is. Two rules follow: keep the value **stable** (it is this
+  project's bucket identity, not something to rotate), and do not copy it into the other
+  parsers, which are limited per API key. Proxies are of no use here — the exit IP is not
+  part of the key. Measurements: [`docs/steam-rate-limits.md`](docs/steam-rate-limits.md).
+- **A Steam pass stops on the first `429` and resumes later.** Retrying only refreshes
+  the block, so the parser ends the pass, keeps everything collected so far, and records
+  the page offset in the `parser_state` table; the next full run (`--all`) continues from
+  it, and starts over at 0 once a pass has been completed. `--count N` runs are slices off
+  the top and neither read nor move that offset. `STEAM_REQUEST_DELAY` paces the pass —
+  `search/render` returns 10 items per page, so the whole CS2 market is ~3,500 requests.
 - Running multiple marketplaces in parallel is supported at the PostgreSQL level
   (multiple writers simultaneously).
-
----
-
-## Proxy pool
-
-To work around Steam's request-rate limit (IP-based bans), the parser can distribute
-requests across a pool of proxies with rotation.
-
-- **File format** — one proxy per line: `user:pass@host:port`
-  (HTTP proxy; the `http://` scheme is added automatically). Empty lines and lines
-  starting with `#` are ignored.
-- **Enabling** — automatic if the `PROXY_LIST_FILE` file exists. To disable it for a
-  specific run use the `--no-proxy` flag; globally, use `PROXY_ENABLED=false`.
-- **How it works** — before each HTTP request a random proxy is picked. On a `429`
-  response or a connection error, the proxy goes into cooldown for `PROXY_COOLDOWN`
-  seconds, and the request is immediately retried through another IP. This eliminates
-  long stalls on a single address at large `--count` values.
-- **Geo** — every exit IP has the region of its proxy subscription; this does not
-  affect prices (Steam is always queried in USD via fixed `currency`/`cc`, DMarket
-  is always USD).
-
-> ⚠️ The proxy list file contains credentials and is added to `.gitignore` —
-> do not commit it.
 
 ---
 
@@ -219,18 +251,26 @@ requests across a pool of proxies with rotation.
 price_compare/
 ├── alembic/                     # DB migrations
 │   └── versions/
+├── docs/
+│   └── steam-rate-limits.md     # measured behaviour of Steam's limits
 ├── src/price_compare/
 │   ├── cli.py                   # argument parsing, parse/prices commands
 │   ├── config.py                # reading .env
 │   ├── db/
-│   │   ├── models.py            # Marketplace, Item, PriceRecord
+│   │   ├── models.py            # Marketplace, Item, PriceRecord, ParserState
 │   │   └── session.py           # engine + SessionLocal
 │   └── parsers/
 │       ├── base.py              # BaseParser: DB persistence, name normalization
 │       ├── steam.py             # SteamParser
 │       ├── dmarket.py           # DMarketParser
 │       └── market_csgo.py       # MarketCsgoParser (ask + bid)
-├── docker-compose.yml           # PostgreSQL
+├── deploy/
+│   ├── docker-compose.yml       # the VPS compose project (cs-parser)
+│   └── .env.example             # template for the server's .env
+├── .github/workflows/
+│   └── deploy.yml               # build -> GHCR -> pin sha on the VPS
+├── Dockerfile
+├── docker-compose.yml           # PostgreSQL (local development)
 ├── alembic.ini
 ├── requirements.txt
 └── .env.example
@@ -247,6 +287,8 @@ price_compare/
   `price_type` (`ask` = lowest listing, `bid` = highest buy order), `recorded_at`),
   linked to an item and a marketplace. A new record on each run. Steam and DMarket
   produce `ask` only; market.csgo.com produces both.
+- **parser_state** — where a paginated pass stopped (`marketplace`, `filters_key`,
+  `next_start`), so a Steam run cut short by a rate limit resumes instead of restarting.
 
 ---
 

@@ -7,8 +7,6 @@ from decimal import Decimal
 
 import requests
 
-from price_compare.config import PROXY_COOLDOWN
-
 logger = logging.getLogger(__name__)
 
 USER_AGENT = (
@@ -21,16 +19,12 @@ USER_AGENT = (
 class BaseParser(ABC):
     marketplace_name: str
     base_url: str | None = None
-    # Whether the CLI should hand this parser the proxy pool. Marketplaces whose
-    # limits are per-account rather than per-IP set it to False and go direct.
-    use_proxy_pool: bool = True
+    # Whether a 429 is worth waiting out. False for marketplaces whose block a
+    # retry only prolongs — those get None back and stop the pass instead.
+    retry_on_rate_limit: bool = True
 
-    def __init__(self, request_delay: float, proxy_pool=None):
+    def __init__(self, request_delay: float):
         self.request_delay = request_delay
-        self.proxy_pool = proxy_pool
-        # How long a proxy is parked after a 429/error. Subclasses can raise it
-        # (Steam bans IPs for hours, so a burned proxy should drop for the run).
-        self.proxy_cooldown = PROXY_COOLDOWN
         # Per-request timeout. Subclasses pulling multi-megabyte dumps raise it.
         self.timeout = 15
         self.session = requests.Session()
@@ -48,49 +42,53 @@ class BaseParser(ABC):
         """
         return None
 
-    def _request(self, url: str, params: dict, max_retries: int | None = None) -> requests.Response | None:
-        """GET a URL with retries, rotating through the proxy pool if present.
+    def _request(
+        self,
+        url: str,
+        params: dict,
+        max_retries: int | None = None,
+        context: str = "",
+    ) -> requests.Response | None:
+        """GET a URL, retrying transient failures.
 
-        Each attempt draws a fresh random proxy from the pool. On a rate-limit
-        (429) or a connection error the proxy is put on cooldown and the request
-        is retried through a different exit IP, so a single IP hitting Steam's
-        limit no longer stalls the whole run.
+        A 429 is backed off and retried, unless the parser sets
+        ``retry_on_rate_limit = False``: there the request returns None right
+        away so the caller can end the pass and keep what it already collected.
+        ``context`` is appended to the log lines — pass whatever identifies the
+        request within the pass (index, page offset).
         """
         if max_retries is None:
-            # A couple of dead proxies shouldn't kill a request, so allow more
-            # attempts when a pool is in use.
-            max_retries = 5 if self.proxy_pool else 3
+            max_retries = 3
+        where = f" ({context})" if context else ""
 
         for attempt in range(max_retries):
-            proxies = self.proxy_pool.get() if self.proxy_pool else None
             headers = self._auth_headers("GET", url)
             try:
-                resp = self.session.get(
-                    url, params=params, timeout=self.timeout, proxies=proxies, headers=headers
-                )
+                resp = self.session.get(url, params=params, timeout=self.timeout, headers=headers)
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code == 429:
-                    if self.proxy_pool:
-                        # Different IP next attempt — no need for a long global wait.
-                        self.proxy_pool.penalize(proxies, self.proxy_cooldown)
-                        logger.warning("Rate limited (429) on %s, rotating proxy", self.marketplace_name)
-                    else:
-                        wait = self.request_delay * (attempt + 2)
-                        logger.warning("Rate limited by %s, waiting %ss...", self.marketplace_name, wait)
-                        time.sleep(wait)
+                    if not self.retry_on_rate_limit:
+                        logger.warning(
+                            "Rate limited (429) by %s%s; ending the pass",
+                            self.marketplace_name, where,
+                        )
+                        return None
+                    wait = self.request_delay * (attempt + 2)
+                    logger.warning(
+                        "Rate limited by %s%s, waiting %ss...",
+                        self.marketplace_name, where, wait,
+                    )
+                    time.sleep(wait)
                     continue
                 if resp.status_code >= 500:
                     time.sleep(self.request_delay)
                     continue
-                logger.warning("HTTP %s for %s", resp.status_code, url)
+                logger.warning("HTTP %s for %s%s", resp.status_code, url, where)
                 return None
             except requests.RequestException as e:
-                logger.warning("Request error: %s", e)
-                if self.proxy_pool:
-                    self.proxy_pool.penalize(proxies, self.proxy_cooldown)
-                else:
-                    time.sleep(self.request_delay)
+                logger.warning("Request error%s: %s", where, e)
+                time.sleep(self.request_delay)
         return None
 
     def run(self, filters: dict | None = None, count: int | None = None) -> list[dict]:

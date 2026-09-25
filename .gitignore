@@ -3,12 +3,13 @@ __pycache__/
 *.pyc
 .env
 .env.local
+# Working notes, not part of the published repo.
+docs/steam-parser-plan.md
 *.egg-info/
 dist/
 build/
 .idea/
 .vscode/
-proxy_list.txt
 
 # Claude Code local settings
 .claude/settings.local.json

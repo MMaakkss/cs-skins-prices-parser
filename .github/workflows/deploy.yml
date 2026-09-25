@@ -1,0 +1,72 @@
+name: deploy
+
+# Build the image, push it to GHCR, pin that exact sha on the VPS and bring the
+# schema up to date. It does NOT start a pass: a full pass is ~4 hours of
+# rate-limited requests and is started by hand (see README, "Running a pass").
+#
+# Manual trigger only. Deploying on every push to main would also run the
+# migration on every push, and a schema change reaching the server unannounced
+# is not worth the convenience.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cs-parser
+  cancel-in-progress: true
+
+env:
+  # Lowercase on purpose: the GitHub account is MMaakkss, but registry paths
+  # must be lowercase, so github.repository_owner cannot be used here.
+  IMAGE: ghcr.io/mmaakkss/cs-skins-prices-parser
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # needed to push to GHCR with the built-in token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Pin the image and migrate on the VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/cs-parser
+
+            # `|` as the sed delimiter because the image name contains slashes.
+            sed -i "s|^PARSER_IMAGE=.*|PARSER_IMAGE=${{ env.IMAGE }}:${{ github.sha }}|" .env
+
+            COMPOSE="docker compose -p cs-parser --env-file .env -f docker-compose.yml"
+            $COMPOSE pull parser
+            # Postgres is this project's own and must be up before the schema
+            # can move; it stays up afterwards, unlike the parser.
+            $COMPOSE up -d postgres
+            # Runs in a throwaway container; the parser image carries alembic
+            # and env.py reads DATABASE_URL from the same environment.
+            $COMPOSE run --rm --entrypoint alembic parser upgrade head
