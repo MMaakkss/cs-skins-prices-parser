@@ -94,3 +94,32 @@ class PriceRecord(Base):
 
     item: Mapped["Item"] = relationship(back_populates="prices")
     marketplace: Mapped["Marketplace"] = relationship(back_populates="prices")
+
+
+class ParserState(Base):
+    """Where a paginated pass stopped, so the next run resumes instead of
+    restarting at 0.
+
+    Steam ends a pass on the first 429 rather than retrying into a longer block
+    (docs/steam-rate-limits.md §4), and a full pass is ~3,548 requests — without
+    a resume point the tail of the market would never get priced. One row per
+    (marketplace, filter set): a narrow pass over one weapon resumes
+    independently of the full-market one.
+    """
+
+    __tablename__ = "parser_state"
+    __table_args__ = (
+        UniqueConstraint("marketplace", "filters_key", name="uq_parser_state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    marketplace: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The run's filters as canonical JSON; "{}" is the unfiltered full pass.
+    filters_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Offset the next run starts from; 0 once a pass has been completed.
+    next_start: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

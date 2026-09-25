@@ -37,11 +37,9 @@ class MarketCsgoParser(BaseParser):
 
     marketplace_name = "market_csgo"
     base_url = "https://market.csgo.com/"
-    # Limits are per API key, not per IP, so proxies buy nothing here.
-    use_proxy_pool = False
 
-    def __init__(self, proxy_pool=None):
-        super().__init__(MARKET_CSGO_REQUEST_DELAY, proxy_pool)
+    def __init__(self):
+        super().__init__(MARKET_CSGO_REQUEST_DELAY)
         # The price dumps are a few megabytes each.
         self.timeout = 60
         self._last_request = 0.0
@@ -159,7 +157,7 @@ class MarketCsgoParser(BaseParser):
 
         return True
 
-    def _request(self, url: str, params: dict, max_retries: int | None = None):
+    def _request(self, url: str, params: dict, max_retries: int | None = None, context: str = ""):
         """Space requests out — market.csgo.com deletes keys that exceed 5 req/s.
 
         The guard lives here rather than around the call sites so retries inside
@@ -169,7 +167,7 @@ class MarketCsgoParser(BaseParser):
         if wait > 0:
             time.sleep(wait)
         self._last_request = time.monotonic()
-        return super()._request(url, params, max_retries)
+        return super()._request(url, params, max_retries, context)
 
     @staticmethod
     def _slug(value: str | None) -> str:

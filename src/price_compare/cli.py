@@ -1,10 +1,7 @@
 import argparse
 import logging
-import os
 import sys
 
-from price_compare.config import PROXY_ENABLED, PROXY_LIST_FILE
-from price_compare.parsers.proxy import ProxyPool
 from price_compare.parsers.steam import SteamParser
 from price_compare.parsers.dmarket import DMarketParser
 from price_compare.parsers.market_csgo import MarketCsgoParser
@@ -16,34 +13,6 @@ MARKETPLACES = {
 }
 
 logger = logging.getLogger("price_compare")
-
-
-def _build_proxy_pool(no_proxy: bool):
-    """Load the proxy pool unless disabled.
-
-    Enabled when PROXY_ENABLED is true, or (when unset) the list file exists.
-    The --no-proxy flag always wins.
-    """
-    if no_proxy or PROXY_ENABLED is False:
-        logger.info("Proxy disabled")
-        return None
-
-    if PROXY_ENABLED is None and not os.path.exists(PROXY_LIST_FILE):
-        logger.info("Proxy disabled (no %s)", PROXY_LIST_FILE)
-        return None
-
-    try:
-        pool = ProxyPool.from_file(PROXY_LIST_FILE)
-    except OSError as e:
-        logger.warning("Could not load proxy list %s: %s", PROXY_LIST_FILE, e)
-        return None
-
-    if not len(pool):
-        logger.warning("Proxy list %s is empty; running without proxies", PROXY_LIST_FILE)
-        return None
-
-    logger.info("Proxy pool: %d proxies from %s", len(pool), PROXY_LIST_FILE)
-    return pool
 
 
 def cmd_parse(args):
@@ -71,15 +40,7 @@ def cmd_parse(args):
     # every available listing instead of stopping at a fixed number.
     count = None if args.all else args.count
 
-    proxy_pool = _build_proxy_pool(args.no_proxy)
-
-    # Marketplaces rate-limited per account rather than per IP gain nothing from
-    # rotating exit nodes, so they opt out. The proxy pool is really for Steam.
-    if proxy_pool is not None and not parser_cls.use_proxy_pool:
-        logger.info("%s is rate-limited per account; proxy pool not applied", args.marketplace)
-        proxy_pool = None
-
-    parser = parser_cls(proxy_pool=proxy_pool)
+    parser = parser_cls()
     logger.info(
         "Parsing %s (count=%s, filters=%s)...",
         args.marketplace, "all" if count is None else count, filters,
@@ -143,7 +104,6 @@ def main():
     parse_cmd.add_argument("--search", help="Search query")
     parse_cmd.add_argument("--price-min", type=float, help="Min price in dollars (e.g. 1.5)")
     parse_cmd.add_argument("--price-max", type=float, help="Max price in dollars (e.g. 50.0)")
-    parse_cmd.add_argument("--no-proxy", action="store_true", help="Disable the proxy pool for this run")
     parse_cmd.set_defaults(func=cmd_parse)
 
     # prices command
@@ -158,7 +118,7 @@ def main():
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     if not args.command:

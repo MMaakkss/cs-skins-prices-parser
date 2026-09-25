@@ -1,0 +1,70 @@
+# CS2 price parser. Deployed to /home/ubuntu/cs-parser/ on the VPS and run as
+# its own compose project:
+#
+#   cd /home/ubuntu/cs-parser
+#   docker compose -p cs-parser --env-file .env -f docker-compose.yml \
+#     run --rm parser parse steam --all
+#
+# Self-contained on purpose: its own Postgres, its own volume, its own network.
+# Taking a database on a Postgres that another project runs on the same host
+# would have worked too, but it ties this data to a volume that project owns,
+# and someone else's `down -v` then takes it — a worse trade than the ~60 MB a
+# second server actually costs. The same file therefore brings the stack up on
+# a laptop unchanged.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: cs-parser-postgres
+    mem_limit: ${POSTGRES_MEM_LIMIT:-512m}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    # No published port: only the parser talks to it, over the project network.
+    # Publishing one would also collide with anything else on 5432 on this host.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  parser:
+    # CI rewrites PARSER_IMAGE in .env with the exact sha it built. A floating
+    # tag would leave the next run on whatever was pushed last, including a
+    # build whose deploy never finished.
+    image: ${PARSER_IMAGE}
+    container_name: cs-parser
+    mem_limit: ${PARSER_MEM_LIMIT:-512m}
+    # No restart policy, deliberately. A pass is a batch job, and one killed by
+    # a 429 must stay dead until someone starts the next one: retrying is what
+    # keeps Steam's block alive (docs/steam-rate-limits.md §4).
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      STEAM_REQUEST_DELAY: ${STEAM_REQUEST_DELAY:-4.0}
+      # The identity of this project's rate-limit bucket. It must stay byte for
+      # byte the same between runs, so it is pinned here rather than left to
+      # the image default drifting apart from it.
+      STEAM_ACCEPT_ENCODING: ${STEAM_ACCEPT_ENCODING}
+      MARKET_CSGO_REQUEST_DELAY: ${MARKET_CSGO_REQUEST_DELAY:-0.25}
+      DMARKET_PUBLIC_KEY: ${DMARKET_PUBLIC_KEY:-}
+      DMARKET_SECRET_KEY: ${DMARKET_SECRET_KEY:-}
+    # A pass writes one line per request — 3,548 of them on a full run. The
+    # rotation keeps that off the disk; a log collector on the host, if there
+    # is one, picks the same stream up by container name.
+    logging: *default-logging
+
+volumes:
+  postgres_data:

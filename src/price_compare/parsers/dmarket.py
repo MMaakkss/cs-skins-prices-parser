@@ -18,12 +18,9 @@ SIGNATURE_PREFIX = "dmar ed25519 "
 class DMarketParser(BaseParser):
     marketplace_name = "dmarket"
     base_url = "https://dmarket.com/"
-    # Rate limits are per API key, not per IP, and rotating one key across many
-    # residential IPs can trip anti-fraud — so DMarket always goes direct.
-    use_proxy_pool = False
 
-    def __init__(self, proxy_pool=None):
-        super().__init__(DMARKET_REQUEST_DELAY, proxy_pool)
+    def __init__(self):
+        super().__init__(DMARKET_REQUEST_DELAY)
         self._public_key = DMARKET_PUBLIC_KEY
         self._secret_key = DMARKET_SECRET_KEY
 
