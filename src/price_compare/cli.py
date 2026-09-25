@@ -46,8 +46,8 @@ def cmd_parse(args):
         args.marketplace, "all" if count is None else count, filters,
     )
 
-    results = parser.run(filters=filters, count=count)
-    logger.info("Saved %d items to database.", len(results))
+    saved = parser.run(filters=filters, count=count)
+    logger.info("Saved %d price records to database.", saved)
 
 
 def cmd_prices(args):

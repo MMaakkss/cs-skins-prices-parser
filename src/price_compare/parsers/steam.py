@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import time
@@ -61,8 +60,23 @@ class SteamParser(BaseParser):
         self.session.headers.update(STEAM_HEADERS)
 
     def fetch_listings(self, filters: dict | None = None, count: int | None = None) -> list[dict]:
+        """Collect a whole pass into one list.
+
+        `run()` goes through `iter_listings()` instead, which writes each page as
+        it arrives; this stays for callers that want the listings themselves.
+        """
+        return [item for page, _ in self.iter_listings(filters=filters, count=count) for item in page]
+
+    def iter_listings(self, filters: dict | None = None, count: int | None = None):
+        """Yield one page at a time, so a pass is persisted as it runs.
+
+        A full pass is ~3,548 requests over several hours. Holding all of it in
+        memory and writing at the end would lose everything to a crash, an OOM
+        kill or a Ctrl-C, and would leave the resume point unwritten as well —
+        so each page is handed over with the offset to continue from, and the
+        two are committed together.
+        """
         filters = filters or {}
-        results = []
 
         # Only a full pass carries a resume point: a `--count N` run is an
         # interactive slice off the top and must not move the nightly pass's
@@ -73,10 +87,10 @@ class SteamParser(BaseParser):
             logger.info("steam: resuming at start=%d", start)
 
         request_index = 0
-        completed = False
+        collected = 0
 
         while True:
-            if count and len(results) >= count:
+            if count and collected >= count:
                 break
 
             params = self._build_params(filters, start=start)
@@ -87,9 +101,11 @@ class SteamParser(BaseParser):
                 context=f"request #{request_index}, start={start}",
             )
             if not response:
+                # Nothing is yielded here, so the resume point stays at the last
+                # page actually committed — which is where to continue.
                 logger.warning(
                     "steam: pass ended early at request #%d, start=%d (%d items collected)",
-                    request_index, start, len(results),
+                    request_index, start, collected,
                 )
                 break
 
@@ -109,34 +125,30 @@ class SteamParser(BaseParser):
             # An empty page is the only reliable end marker: total_count drifts
             # while a pass of thousands of requests is running.
             if not page:
-                completed = True
+                if resumable:
+                    yield [], 0
                 break
 
-            for item in page:
-                parsed = self._parse_listing(item)
-                if parsed:
-                    results.append(parsed)
+            parsed = [p for p in (self._parse_listing(item) for item in page) if p]
+            if count:
+                parsed = parsed[: count - collected]
+            collected += len(parsed)
 
             # Advance by what the response actually returned, never by a
             # constant — `count` is ignored and the page size is Valve's to
             # change (it dropped from 100 to 10).
             start += data.get("pagesize") or len(page)
-            if start >= total_count:
-                completed = True
+            finished = start >= total_count
+
+            yield parsed, (0 if finished else start) if resumable else None
+
+            if finished:
                 break
 
             time.sleep(self.request_delay)
 
-        if resumable:
-            self._save_resume_start(filters, 0 if completed else start)
-
-        return results[:count] if count else results
-
-    @staticmethod
-    def _resume_key(filters: dict) -> str:
-        return json.dumps(filters, sort_keys=True)
-
     def _load_resume_start(self, filters: dict) -> int:
+        """Where the last pass over this filter set stopped. 0 means the top."""
         from price_compare.db.models import ParserState
         from price_compare.db.session import SessionLocal
 
@@ -147,35 +159,6 @@ class SteamParser(BaseParser):
                 filters_key=self._resume_key(filters),
             ).first()
             return state.next_start if state else 0
-        finally:
-            session.close()
-
-    def _save_resume_start(self, filters: dict, next_start: int) -> None:
-        """Record where the next pass over this filter set should begin.
-
-        ``0`` means the pass finished and the next one starts from the top.
-        """
-        from price_compare.db.models import ParserState
-        from price_compare.db.session import SessionLocal
-
-        session = SessionLocal()
-        try:
-            state = session.query(ParserState).filter_by(
-                marketplace=self.marketplace_name,
-                filters_key=self._resume_key(filters),
-            ).first()
-            if state:
-                state.next_start = next_start
-            else:
-                session.add(ParserState(
-                    marketplace=self.marketplace_name,
-                    filters_key=self._resume_key(filters),
-                    next_start=next_start,
-                ))
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
         finally:
             session.close()
 

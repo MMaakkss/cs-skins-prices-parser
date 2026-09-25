@@ -1,8 +1,10 @@
+import json
 import logging
 import re
 import time
 import unicodedata
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from decimal import Decimal
 
 import requests
@@ -91,20 +93,51 @@ class BaseParser(ABC):
                 time.sleep(self.request_delay)
         return None
 
-    def run(self, filters: dict | None = None, count: int | None = None) -> list[dict]:
+    def iter_listings(
+        self, filters: dict | None = None, count: int | None = None
+    ) -> Iterator[tuple[list[dict], int | None]]:
+        """Yield the pass in batches, as ``(listings, resume_offset)`` pairs.
+
+        The default is a single batch written once the whole pass is done, which
+        is right for a marketplace answered in two requests. A parser whose pass
+        runs for hours overrides this and yields as it goes, so a crash, an OOM
+        kill or a Ctrl-C keeps everything collected up to that point.
+
+        ``resume_offset`` is where the next run should continue, persisted in the
+        same transaction as the batch so the two cannot disagree; None for
+        parsers that have no resume point.
+        """
+        yield self.fetch_listings(filters=filters, count=count), None
+
+    def run(self, filters: dict | None = None, count: int | None = None) -> int:
         """Fetch listings and append a fresh price snapshot for each to the DB.
 
         Every run inserts a new PriceRecord per item so price history
         accumulates over time; existing records are never overwritten.
         Listings without a valid (positive) price are skipped and logged.
+        Returns the number of price records written.
         """
-        from price_compare.db.models import Item, Marketplace, PriceRecord
+        saved = skipped = 0
+        for listings, resume_offset in self.iter_listings(filters=filters, count=count):
+            batch_saved, batch_skipped = self._persist(listings, resume_offset, filters)
+            saved += batch_saved
+            skipped += batch_skipped
+
+        logger.info(
+            "%s: saved %d price records, skipped %d",
+            self.marketplace_name, saved, skipped,
+        )
+        return saved
+
+    def _persist(
+        self, listings: list[dict], resume_offset: int | None, filters: dict | None
+    ) -> tuple[int, int]:
+        """Write one batch and its resume point in a single transaction."""
+        from price_compare.db.models import Item, Marketplace, ParserState, PriceRecord
         from price_compare.db.session import SessionLocal
 
-        listings = self.fetch_listings(filters=filters, count=count)
-
         session = SessionLocal()
-        saved = []
+        saved = 0
         skipped = 0
         try:
             marketplace = session.query(Marketplace).filter_by(name=self.marketplace_name).first()
@@ -152,7 +185,21 @@ class BaseParser(ABC):
                     # also exposes buy orders sets price_type="bid" on those.
                     price_type=listing.get("price_type", "ask"),
                 ))
-                saved.append(listing)
+                saved += 1
+
+            if resume_offset is not None:
+                key = self._resume_key(filters or {})
+                state = session.query(ParserState).filter_by(
+                    marketplace=self.marketplace_name, filters_key=key
+                ).first()
+                if state:
+                    state.next_start = resume_offset
+                else:
+                    session.add(ParserState(
+                        marketplace=self.marketplace_name,
+                        filters_key=key,
+                        next_start=resume_offset,
+                    ))
 
             session.commit()
         except Exception:
@@ -161,11 +208,12 @@ class BaseParser(ABC):
         finally:
             session.close()
 
-        logger.info(
-            "%s: saved %d price records, skipped %d",
-            self.marketplace_name, len(saved), skipped,
-        )
-        return saved
+        return saved, skipped
+
+    @staticmethod
+    def _resume_key(filters: dict) -> str:
+        """Canonical form of a filter set, used to key the resume point."""
+        return json.dumps(filters, sort_keys=True)
 
     @staticmethod
     def _normalize_name(name: str) -> str:

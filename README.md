@@ -183,9 +183,12 @@ $COMPOSE run --rm parser parse market_csgo --all    # two requests, seconds
 $COMPOSE run --rm parser prices "AK-47" --limit 20  # read back what was saved
 ```
 
-A pass cut short by a `429` keeps everything it collected and records where it
-stopped, so the next `--all` run continues from that offset instead of
-restarting at 0.
+Listings are written page by page as the pass runs, together with the offset to
+continue from. A failure of any kind — a `429`, a crash, an OOM kill, a Ctrl-C —
+therefore costs at most the page in flight, and the next `--all` run over the
+same filters resumes from the recorded offset instead of restarting at 0. What a
+pass costs in requests, time and disk is recorded in
+[`docs/operations.md`](docs/operations.md).
 
 Each request writes a line — `steam request #N: start=… status=200 items=10` —
 so `docker logs` (or whatever collector the host runs) carries the raw material
@@ -252,7 +255,8 @@ price_compare/
 ├── alembic/                     # DB migrations
 │   └── versions/
 ├── docs/
-│   └── steam-rate-limits.md     # measured behaviour of Steam's limits
+│   ├── steam-rate-limits.md     # measured behaviour of Steam's limits
+│   └── operations.md            # what a pass costs: requests, time, disk
 ├── src/price_compare/
 │   ├── cli.py                   # argument parsing, parse/prices commands
 │   ├── config.py                # reading .env
