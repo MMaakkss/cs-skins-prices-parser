@@ -12,7 +12,8 @@ Measured **2026-09-25** on a 3.7 GB VPS, Postgres 18 in the same compose project
 |---|---|---|---|---|
 | `market_csgo` | 2 | 52,710 | 2 m 11 s | 27,698 ask + 25,084 bid, 72 skipped on a zero price |
 | `steam` (narrow: one weapon, one exterior) | 3 | 28 | 13 s | `--count 30`, 2 skipped |
-| `steam` (full market, attempt at a 4 s delay) | 2,497 | 24,654 | 2 h 59 m | stopped by a 429 at 70%; see [`steam-rate-limits.md`](steam-rate-limits.md) §8 |
+| `steam` (full market, 4.0 s delay, popularity order) | 2,497 | 24,654 | 2 h 59 m | stopped by the daily cap at 70%; 21% of rows were duplicates |
+| `steam` (full market, 4.5 s delay, name order) | 2,500 | 24,792 | 3 h 20 m | stopped by the same cap at the same place; 0.10% duplicates |
 
 `market_csgo` spent **2 seconds** of those 131 on the network — both price dumps
 arrive in two requests. Everything else was database work.
@@ -30,17 +31,21 @@ known: load the existing names for a batch in one query instead of one per row.
 For Steam the cost is invisible — ~35,000 rows spread across ~3,548 page
 commits, against four hours of deliberately rate-limited fetching.
 
-## A Steam pass does not fit in one sitting at a 4 s delay
+## A Steam pass does not fit in one day
 
-The first full attempt reached `start=24970` of ~35,520 before the budget ran out. That
-is not a failure mode to fix in code — the pace was wrong, and §8 of the rate-limit notes
-now gives the arithmetic for a pace that finishes. Two operational consequences:
+Both attempts stopped at ~2,500 requests — 25,000 of 35,525 positions — regardless of
+pace. That is a daily quota, not a rate ([`steam-rate-limits.md`](steam-rate-limits.md)
+§8), so slowing down or speeding up changes only how long the day's quota takes to spend.
 
-- The tail of the market is priced by the **next** run, which resumes from the recorded
-  offset. Nothing has to be re-fetched.
-- Of the 24,654 rows written, only 19,473 were distinct items: the endpoint's popularity
-  ordering repeats items across pages (§9). Budget spent on duplicates is budget the tail
-  never sees.
+Operationally:
+
+- A full market snapshot takes **two days**: ~2,500 requests, then ~1,053 the next day
+  from the recorded offset. Nothing is re-fetched.
+- Slowing down buys nothing. 4.5 s is kept because it is known not to trip the separate
+  burst limit, not because it stretches the quota.
+- Daily coverage of the whole market needs requests from somewhere other than
+  `search/render` — which is what makes the 100-items-per-request endpoint worth
+  revisiting for the categories it serves losslessly.
 
 ## Database growth
 

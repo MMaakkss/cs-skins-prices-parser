@@ -117,36 +117,40 @@ check 5–8 names against `priceoverview`. `Last-Modified` proves nothing. The s
 still has to be run against the paid aggregators (steamdataapi.com, steamwebapi.com) if
 they are ever considered.
 
-## 8. The refill rate, measured on a full pass (2026-09-25)
+## 8. What ends a pass is a daily cap of ~2,500 requests, not a rate
 
-A pass from the server at `STEAM_REQUEST_DELAY=4.0` — 4.30 s per request including the
-request itself — ran **2,497 successful requests in 10,745 s** (2 h 59 m) and took a 429
-on request #2,498, at `start=24970`, about 70% of the way through the market.
+Two full passes from the server, and the second one falsified the reading of the first.
 
-Together with the cold bucket of 100 tokens from §2, that pins the refill rate:
+| | Pass 1 (2026-09-25) | Pass 2 (2026-09-26) |
+|---|---|---|
+| Pace | 4.30 s per request | **4.80 s per request** |
+| Duration | 179 min | 200 min |
+| Quiet before the start | hours | **21 hours** |
+| Successful requests | 2,497 | 2,500 |
+| 429 on request | #2,498 | #2,501 |
 
-```
-100 + r × 10,745 s = 2,497   →   r ≈ 0.223 req/s   (one request per 4.48 s)
-```
+Pass 1 was preceded the same day by a 3-request smoke test: 2,497 + 3 = **2,500**. Pass 2
+made 2,500 requests and nothing else ran that day. Two days, two paces, the same total.
 
-The model then predicts the failure exactly, which is the reason to trust it: drawing
-0.2324 req/s against a refill of 0.2231 drains the 100-token buffer in
-100 / 0.0093 ≈ 10,750 s. The 429 arrived at 10,745 s.
+The first pass alone looked like a refilling bucket: with the 100 tokens of §2 as a
+starting credit, `100 + r × 10,745 s = 2,497` gives r ≈ 0.223 req/s, and that model
+predicted the failure to within five seconds. It was one point fitted with a line. A
+*slower* second pass should then have gone further, and it did not move at all.
 
-What follows for the pace:
+So the binding limit is a **quota of ~2,500 requests per day** per `Accept-Encoding`
+string on `search/render`, and **pacing does not change how much a day yields**. The
+burst limit of §2 is a separate, shorter-term thing; both passes stayed under it, so all
+that is known is that one request per 4.30 s does not trip it.
 
-- **4.0 s is slightly too fast.** The deficit is only 4%, but it is a deficit, so the
-  pass always dies — just late enough to look like it was working.
-- A full 3,553-page pass needs a cycle of at least **4.36 s** (`100 + 0.223 × 3553c ≥
-  3553`). That is the break-even, not a setting to use.
-- With margin: **5.0 s** gives a ~5.2 h pass and a comfortable surplus; 4.5 s gives
-  ~4.7 h and about 10% headroom.
-- The cold bucket only matters for the first seven minutes. After that the pass is
-  living entirely on refill, which is why the pace, not the starting credit, decides
-  whether it finishes.
+What this costs: 2,500 × 10 items = **25,000 positions a day against a market of
+35,525**. A full snapshot cannot be taken in one day through this endpoint — it takes
+~1.42 days, which is why the resume point matters and why a second endpoint for the
+categories it can serve losslessly (§10) stops being an optimisation and becomes the
+only way to a daily snapshot.
 
-The block itself behaved as §4 describes: the pass stopped on the first 429 without
-retrying, kept all 24,654 records it had written, and recorded `next_start = 24970`.
+Still open on this: whether the window is a calendar day or a rolling 24 hours, and what
+the burst limit actually allows — no pace faster than 4.30 s has been tried on the
+server, and a faster one would finish the daily quota in less wall-clock time.
 
 ## 9. Popularity ordering is unstable deeper in the list
 
@@ -159,7 +163,9 @@ also an item the pass never reached. Verified on a narrow filter too: one weapon
 exterior returned 108 positions for 83 distinct names, with page boundaries repeating
 from `start=40` onwards, while the first four pages were clean.
 
-The parser now sorts by name (`sort_column=name&sort_dir=asc`), which costs one thing:
+**Fixed and confirmed.** The parser now sorts by name (`sort_column=name&sort_dir=asc`).
+The next pass wrote 24,792 rows covering 24,766 distinct names — 26 duplicates, 0.10%,
+down from 21%. What it costs is one thing:
 `--count N` means "the first N alphabetically" rather than "the N most popular". At 21%
 waste this was the cheapest improvement available to the pass — worth more than any
 endpoint change measured here.
