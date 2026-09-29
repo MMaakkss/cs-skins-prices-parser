@@ -175,6 +175,57 @@ the offsets recorded under the old one point somewhere else entirely. `SteamPars
 therefore writes the page order into the resume key, which orphans the old rows instead
 of resuming into the wrong part of the market.
 
+## 10. Dead end: routing item types to `market/actions`
+
+The daily quota of §8 makes a full snapshot cost 1.42 days, so `market/actions` — 100
+items per request, its own quota — was worth a second look for the categories it might
+serve losslessly. It is not usable, and the way it fails is the reason to write this down.
+
+**Its type filter returns the wrong items, while the totals look right.** A full pass over
+`Type=CSGO_Tool_Keychain` (charms) returned:
+
+| What came back | Count |
+|---|---|
+| `Sticker \| …` | 6,483 |
+| `Sticker Slab \| …` | 220 |
+| `Charm \| …` | **67** |
+| `Souvenir Charm \| …` | 4 |
+
+99% of the results are not charms. And yet its `total_count` of 7,765 sat plausibly
+between `search/render`'s charm count (6,835) and that plus Souvenir charms (7,758) —
+which is how the earlier comparison, done on counts alone, passed.
+
+**Pagination drifts.** 78 requests across 7,765 positions produced 6,774 distinct names:
+~13% duplicates, the same instability `search/render` had under popularity ordering (§9).
+The `sort` field exists — a string value returns HTTP 500, an integer changes the order —
+but `sort=1` gives reverse-alphabetical and no combination tried produced a stable
+ascending page order.
+
+**3% of rows carry another item's price**, as established in §"price from" behaviour: a
+group card names one item and prices the cheapest member of its group.
+
+Each of these fails silently. Counts match, rows look plausible, names are real — and the
+data is wrong. For a price database that is worse than an endpoint that simply refuses.
+
+## 11. A price floor buys what the second endpoint could not
+
+`search/render` honours `price_min` server-side, and it reduces `total_count`, so it
+reduces the pass:
+
+| Floor | Positions | Requests | Fits the 2,500/day quota? |
+|---|---|---|---|
+| none | 35,525 | 3,553 | no |
+| ≥ $0.50 | 27,534 | 2,754 | no |
+| **≥ $1.00** | **23,975** | **2,398** | **yes, with ~100 to spare** |
+
+What the floor discards is dust: across a full snapshot, every item priced under $0.10
+together accounts for **0.010% of the market's total value**.
+
+So the shape of a schedule that works without touching the `Accept-Encoding` string or
+trusting a second endpoint: a **daily pass with `--price-min 1.0`**, which fits one day's
+quota, plus a **full sweep** over two days as often as the tail is actually wanted. The
+two keep independent resume offsets, because the resume key includes the filter set.
+
 ## What is still unknown
 
 1. **How long a block lasts** once triggered. Known to exceed 2 minutes of silence; the
