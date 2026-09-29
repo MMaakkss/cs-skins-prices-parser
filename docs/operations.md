@@ -13,7 +13,8 @@ Measured **2026-09-25** on a 3.7 GB VPS, Postgres 18 in the same compose project
 | `market_csgo` | 2 | 52,710 | 2 m 11 s | 27,698 ask + 25,084 bid, 72 skipped on a zero price |
 | `steam` (narrow: one weapon, one exterior) | 3 | 28 | 13 s | `--count 30`, 2 skipped |
 | `steam` (full market, 4.0 s delay, popularity order) | 2,497 | 24,654 | 2 h 59 m | stopped by the daily cap at 70%; 21% of rows were duplicates |
-| `steam` (full market, 4.5 s delay, name order) | 2,500 | 24,792 | 3 h 20 m | stopped by the same cap at the same place; 0.10% duplicates |
+| `steam` (full market, 4.5 s delay, name order) | 2,500 | 24,792 | 3 h 20 m | stopped by the same cap at 70%; 0.10% duplicates |
+| `steam` (the same pass resumed three days later) | 1,053 | 10,279 | 1 h 24 m | reached the end; `parser_state` reset itself to 0 |
 
 `market_csgo` spent **2 seconds** of those 131 on the network — both price dumps
 arrive in two requests. Everything else was database work.
@@ -47,9 +48,31 @@ Operationally:
   `search/render` — which is what makes the 100-items-per-request endpoint worth
   revisiting for the categories it serves losslessly.
 
+## A complete market snapshot, and what it cost
+
+The first full alphabetical snapshot was finished on 2026-09-29, in two sessions split by
+the daily quota:
+
+```
+2,500 requests + 1,053 requests = 3,553   (= 35,524 positions / 10 per page)
+24,792 rows    + 10,279 rows    = 35,071 price records
+208 skipped    + 245 skipped    =    453 items priced at zero
+35,071 + 453 = 35,524 — every position traversed is accounted for
+```
+
+35,039 distinct names against 32 duplicate writes: **0.09%**. The resume point carried
+the offset across three days and a container that no longer existed, then reset itself to
+0 on completion, which is what makes "two sessions" a detail rather than an operation.
+
+Wall clock was 4 h 44 m of requesting. The gap between the sessions was not: the quota
+has to refill, and that is the real cost of a full snapshot — **1.42 days of quota**, not
+five hours of runtime.
+
 ## Database growth
 
-After one `market_csgo` pass and 70% of a Steam pass: **32,634 items, 36 MB**.
+After one `market_csgo` pass and a complete Steam pass: **36,402 items, 45 MB**, holding
+59,753 Steam price records (several snapshots per item by now) and 52,710 from
+`market_csgo`.
 A daily full pass of both marketplaces adds roughly 5–8 MB, so on the order of
 2 GB a year. Worth a `pg_dump` in cron long before it is worth worrying about
 disk.
