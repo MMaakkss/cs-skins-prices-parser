@@ -25,26 +25,66 @@ class DMarketParser(BaseParser):
         self._secret_key = DMARKET_SECRET_KEY
 
     def fetch_listings(self, filters: dict | None = None, count: int | None = None) -> list[dict]:
+        """Collect a whole pass into one list.
+
+        `run()` goes through `iter_listings()` instead, which writes each page as
+        it arrives; this stays for callers that want the listings themselves.
+        """
+        return [item for page, _ in self.iter_listings(filters=filters, count=count) for item in page]
+
+    def iter_listings(self, filters: dict | None = None, count: int | None = None):
+        """Yield each page's new titles, so a long pass is persisted as it runs.
+
+        A full pass walks every *offer*, not every item, and collapses them to
+        the cheapest offer per title — so the deeper it goes the more requests it
+        spends per new name, and the whole thing runs for hours. Writing only at
+        the end would hand all of that to the first crash.
+
+        The resume point is a price in cents. Offers arrive in ascending price
+        order, so the next run can start from the last price seen instead of
+        paging through what it already has. The cursor would be the natural
+        bookmark, but it is an opaque string where `parser_state` holds an
+        integer — and a price survives DMarket rotating its cursors, which an
+        opaque token would not.
+        """
         if not self._public_key or not self._secret_key:
             logger.error(
                 "DMarket requires Trading API keys. Set DMARKET_PUBLIC_KEY and "
                 "DMARKET_SECRET_KEY in .env (dmarket.com -> Settings -> Trading API)."
             )
-            return []
+            return
 
         filters = filters or {}
-        seen = {}
+
+        # Only a full pass carries a resume point; `--count N` is a slice off the
+        # cheap end and must not move it.
+        resumable = count is None
+        resume_cents = self._load_resume_start(filters) if resumable else 0
+        if resume_cents:
+            logger.info("dmarket: resuming from $%.2f", resume_cents / 100)
+
+        seen: set[str] = set()
+        collected = 0
         cursor = ""
+        last_cents = resume_cents
+        request_index = 0
 
         while True:
-            if count and len(seen) >= count:
+            if count and collected >= count:
                 break
 
-            params = self._build_params(filters, cursor=cursor, count=100)
-
+            params = self._build_params(filters, cursor=cursor, count=100, min_cents=resume_cents)
             url = f"{API_ROOT}{SEARCH_PATH}?{urlencode(params, quote_via=quote)}"
-            response = self._request(url, params=None)
+            request_index += 1
+
+            response = self._request(url, params=None, context=f"request #{request_index}")
             if not response:
+                # Nothing is yielded, so the resume point stays at the last page
+                # that was committed — which is where to continue.
+                logger.warning(
+                    "dmarket: pass ended early at request #%d (%d items collected)",
+                    request_index, collected,
+                )
                 break
 
             try:
@@ -52,45 +92,65 @@ class DMarketParser(BaseParser):
             except ValueError:
                 logger.error("Failed to parse JSON response from dmarket")
                 break
+
             items = data.get("items") or []
             if not items:
+                if resumable:
+                    yield [], 0
                 break
 
+            page = []
             for item in items:
                 name = item.get("attributes", {}).get("title")
                 if not name:
                     continue
                 name = self._normalize_name(name)
-                if name in seen:
-                    continue
+
+                # priceCents is a string of USD cents.
+                cents = int(item.get("priceCents", "0"))
+                last_cents = max(last_cents, cents)
 
                 # Offers are sorted by price asc, so the first offer seen for a
-                # title is its cheapest. priceCents is a string of USD cents.
-                price = int(item.get("priceCents", "0")) / 100.0
-                weapon, skin_name, exterior = self._parse_name(name)
+                # title is its cheapest; later ones are the same item dearer.
+                if name in seen:
+                    continue
+                seen.add(name)
 
-                seen[name] = {
+                weapon, skin_name, exterior = self._parse_name(name)
+                page.append({
                     "market_hash_name": name,
                     "weapon": weapon,
                     "skin_name": skin_name,
                     "exterior": exterior,
-                    "price": price,
+                    "price": cents / 100.0,
                     "volume": None,
                     "icon_url": item.get("image"),
                     "stattrak": "StatTrak" in name,
                     "souvenir": "Souvenir" in name,
-                }
+                })
+
+            if count:
+                page = page[: count - collected]
+            collected += len(page)
 
             cursor = data.get("cursor", "")
-            if not cursor:
+            finished = not cursor
+            if request_index % 20 == 0:
+                logger.info(
+                    "dmarket request #%d: %d items collected, at $%.2f",
+                    request_index, collected, last_cents / 100,
+                )
+
+            yield page, (0 if finished else last_cents) if resumable else None
+
+            if finished:
                 break
 
             time.sleep(self.request_delay)
 
-        results = list(seen.values())
-        return results[:count] if count else results
-
-    def _build_params(self, filters: dict, cursor: str = "", count: int = 100) -> dict:
+    def _build_params(
+        self, filters: dict, cursor: str = "", count: int = 100, min_cents: int = 0
+    ) -> dict:
         filters = filters or {}
         params = {
             "gameId": "a8db",
@@ -106,8 +166,11 @@ class DMarketParser(BaseParser):
         if "search" in filters:
             params["title"] = filters["search"]
 
-        if "price_min" in filters:
-            params["priceFrom"] = int(filters["price_min"] * 100)
+        # The caller's floor and the resume point are the same knob; the
+        # higher of the two wins, so resuming never widens a filtered pass.
+        floor = max(int(filters.get("price_min", 0) * 100), min_cents)
+        if floor:
+            params["priceFrom"] = floor
 
         if "price_max" in filters:
             params["priceTo"] = int(filters["price_max"] * 100)

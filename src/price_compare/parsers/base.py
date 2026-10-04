@@ -218,6 +218,21 @@ class BaseParser(ABC):
         """
         return json.dumps(filters, sort_keys=True)
 
+    def _load_resume_start(self, filters: dict) -> int:
+        """Where the last pass over this filter set stopped. 0 means the top."""
+        from price_compare.db.models import ParserState
+        from price_compare.db.session import SessionLocal
+
+        session = SessionLocal()
+        try:
+            state = session.query(ParserState).filter_by(
+                marketplace=self.marketplace_name,
+                filters_key=self._resume_key(filters),
+            ).first()
+            return state.next_start if state else 0
+        finally:
+            session.close()
+
     @staticmethod
     def _normalize_name(name: str) -> str:
         """Normalize a market hash name without altering its visible content.

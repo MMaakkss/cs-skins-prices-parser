@@ -157,21 +157,6 @@ class SteamParser(BaseParser):
 
             time.sleep(self.request_delay)
 
-    def _load_resume_start(self, filters: dict) -> int:
-        """Where the last pass over this filter set stopped. 0 means the top."""
-        from price_compare.db.models import ParserState
-        from price_compare.db.session import SessionLocal
-
-        session = SessionLocal()
-        try:
-            state = session.query(ParserState).filter_by(
-                marketplace=self.marketplace_name,
-                filters_key=self._resume_key(filters),
-            ).first()
-            return state.next_start if state else 0
-        finally:
-            session.close()
-
     def _parse_listing(self, item: dict) -> dict | None:
         name = item.get("hash_name") or item.get("name")
         if not name:
