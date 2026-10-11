@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -117,6 +117,41 @@ class Sale(Base):
     marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id"), primary_key=True)
     sold_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     price: Mapped[Decimal] = mapped_column(Numeric(14, 4), primary_key=True)
+
+
+class SalesStats(Base):
+    """Sales volume of one item as a marketplace itself reported it.
+
+    One row per fetch, so a re-check of the same item adds a row instead of
+    overwriting. Filled from market.csgo.com's per-item ``full-history`` files,
+    which are exact (same-second sales counted, unlike ``sales``) but cost one
+    slow request per item — so only for a short list of candidates.
+    """
+
+    __tablename__ = "sales_stats"
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
+    marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id"), primary_key=True)
+    # When the marketplace generated the numbers, not when we fetched them:
+    # its files are cached, sometimes for hours.
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    sales_7d: Mapped[int] = mapped_column(Integer, nullable=False)
+    sales_30d: Mapped[int] = mapped_column(Integer, nullable=False)
+    # USD medians of the sales in each window; None when there were none.
+    median_7d: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    median_30d: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    # The file holds at most 6,000 sales. When it is full, a window that reaches
+    # past its oldest sale is undercounted: see ``truncated()``.
+    capped: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    oldest_sale: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @staticmethod
+    def truncated(stats: dict, days: int) -> bool:
+        """Whether the count over the last ``days`` is only a floor."""
+        return bool(
+            stats["capped"] and stats["oldest_sale"]
+            and stats["oldest_sale"] > stats["as_of"] - timedelta(days=days)
+        )
 
 
 class ParserState(Base):

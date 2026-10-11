@@ -155,6 +155,30 @@ python -m price_compare sales "AK-47 | Redline"  # partial name match
 Columns: sales in the last 7 and 30 days, the median price over 7 days, the last
 sale. Windows are counted back from now.
 
+### `candidates` command — Steam -> market.csgo.com resale, priced by real sales
+
+```bash
+python -m price_compare candidates --price-max 5            # shortlist of 30, then check each
+python -m price_compare candidates --price-min 1 --limit 10
+python -m price_compare candidates "Nova | Walnut (Battle-Scarred)"   # check given items
+```
+
+Builds a shortlist from prices already in the database — latest Steam ask vs latest
+market.csgo.com ask, ROI between `--min-roi` and `--max-roi` (default 0–100%; above
+that it is usually one overpriced listing) — then fetches each item's
+`full-history` file and reports what it actually sold for: sales over 7 / 30 days,
+the 7-day median sale, and the profit of selling at that median after the 5% fee.
+
+Both asks must be recent (`--steam-max-age-days` 3, `--tm-max-age-days` 2): run
+`parse market_csgo --all` first — two requests — or the shortlist compares today's
+Steam with last week's TM.
+
+A TM ask is what a listing is priced at, not what it sells for, so the two often
+disagree by 15–20% — that gap is the reason for the command. Each item costs one
+request of ~16 s on average (sequential, no API key); results are stored in
+`sales_stats` and reused for `--refresh-hours` (24). Ctrl-C stops fetching and
+prints what was fetched.
+
 ### Logging
 
 Diagnostic messages are emitted via `logging` (level `INFO`).
@@ -210,6 +234,7 @@ $COMPOSE run --rm parser parse steam --count 100    # a quick slice off the top
 $COMPOSE run --rm parser parse market_csgo --all    # two requests, seconds
 $COMPOSE run --rm parser prices "AK-47" --limit 20  # read back what was saved
 $COMPOSE run --rm parser sales "AK-47" --limit 20   # sales over 7 / 30 days
+$COMPOSE run --rm parser candidates --price-max 5   # resale shortlist, real TM sales
 $COMPOSE logs --tail 50 sales-feed                  # the feed: a stats line every 10 min
 ```
 
@@ -301,13 +326,15 @@ price_compare/
 │   ├── steam-rate-limits.md     # measured behaviour of Steam's limits
 │   └── operations.md            # what a pass costs: requests, time, disk
 ├── src/price_compare/
-│   ├── cli.py                   # argument parsing, parse/prices/listen/sales
+│   ├── cli.py                   # argument parsing, parse/prices/listen/sales/candidates
+│   ├── candidates.py            # Steam -> TM shortlist, priced by full-history
 │   ├── config.py                # reading .env
 │   ├── db/
-│   │   ├── models.py            # Marketplace, Item, PriceRecord, Sale, ParserState
+│   │   ├── models.py            # Marketplace, Item, PriceRecord, Sale, SalesStats, ParserState
 │   │   └── session.py           # engine + SessionLocal
 │   ├── feeds/
 │   │   ├── market_csgo.py       # MarketCsgoSalesFeed: live sales -> sales
+│   │   ├── market_csgo_history.py  # full-history files: exact per-item volume
 │   │   └── partitions.py        # daily partitions of sales, retention
 │   └── parsers/
 │       ├── base.py              # BaseParser: DB persistence, name normalization
@@ -340,6 +367,9 @@ price_compare/
 - **sales** — one row per sale from a live feed (`item_id`, `marketplace_id`,
   `sold_at`, `price` in USD), primary key on all four. Partitioned by day on
   `sold_at`; only the last `SALES_RETENTION_DAYS` days exist.
+- **sales_stats** — per-item volume as the marketplace reports it (`sales_7d`,
+  `sales_30d`, USD medians, `as_of` = when the marketplace generated it), one row
+  per fetch. Filled by `candidates` from market.csgo.com's `full-history` files.
 - **parser_state** — where a paginated pass stopped (`marketplace`, `filters_key`,
   `next_start`), so a Steam run cut short by a rate limit resumes instead of restarting.
 

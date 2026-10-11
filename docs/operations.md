@@ -145,3 +145,32 @@ start and on the first batch of each UTC day, and drops older ones with
 `DROP TABLE`. Partitioning by sale time rather than arrival time is what lets a
 week-later re-send land next to its original and be merged. Rows outside the window
 are counted as "outside retention" in the stats line and dropped.
+
+## market.csgo.com full-history: exact volume, one item at a time
+
+`full-history/all.json` maps ~29,450 names to ids; `full-history/{id}.json` holds the
+item's last 6,000 sales `[time, RUB, USD, EUR]` and the marketplace's own
+`sales7d` / `sales30d`. No key. Found 2026-10-06.
+
+- **Exact.** The counts matched `get-list-items-info` and, unlike `sales` from the
+  feed, include identical sales in the same second (MAG-7 Firestarter MW 5/20,
+  Redline FT 152/625, Griffin FT 213/741 in 7/30 days).
+- **6,000-sale cap.** Only cases and the cheapest stackables fill a month: D&N Case
+  sells 6,000 in under three days. A full file whose oldest sale falls inside a
+  window makes that window a floor (`+` in `candidates`); Griffin's 6,000 span five
+  months, so its counts are complete.
+- **Cached, sometimes for hours.** Each file carries the time it was generated;
+  `sales_stats.as_of` is that time, not the fetch time.
+- **Slow.** 40 random ids, one at a time: 20 cached (<1 s), 7 slow but fine,
+  13 × 522 after ~39 s. ~16 s per item on average, so the whole market would take
+  ~5 days. `candidates` fetches sequentially with a 0.5 s gap and 3 attempts.
+- From a home connection `all.json` got a 522 where the server got it in 20 s;
+  retries usually succeed because the server finishes building the file anyway.
+
+First use (2026-10-11), items that looked profitable at the TM ask (test prices from 2026-10-05):
+
+| Item | Steam | TM ask | 7d median sale | Profit after 5% |
+|---|---|---|---|---|
+| ST MAG-7 Firestarter MW | $2.55 | $2.87 | $2.68 | $0.00 |
+| P90 Storm FT | $2.11 | $2.34 | $1.90 | −14.6% |
+| Nova Walnut BS | $1.86 | $2.15 | $1.60 | −18.0% |
