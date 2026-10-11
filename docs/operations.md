@@ -137,6 +137,16 @@ below the real count (AK-47 Redline FT: 49 vs >140). Rejected.
   overcounts by ~30%.
 - ~2% of messages are empty (no name, zero price) and are dropped.
 
+### The token endpoint is slow
+
+From the server, `GET /api/centrifugo/refresh` answered 10 requests on 2026-10-11 as:
+6 × 200 in ~19.7 s, 3 × 200 in under 3 s, 1 × 522 at ~39 s. With the first
+deploy's 15 s timeout nearly every refresh failed and dropped the connection; one
+run of failures kept the feed down for ~5 minutes. Since then the token is fetched
+before the socket opens, refreshes run in a thread from half the token's 300 s
+lifetime, with a 45 s timeout and retries every 10 s, while the socket keeps
+answering pings.
+
 ### Partitions
 
 Daily on `sold_at`, UTC midnights, named `sales_YYYYMMDD`. The feed keeps

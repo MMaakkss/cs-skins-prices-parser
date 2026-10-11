@@ -20,6 +20,7 @@ import json
 import logging
 import signal
 import time as clock
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -46,8 +47,12 @@ FLUSH_ROWS = 500
 # Rows held while the database is unreachable; past this the oldest go.
 MAX_BUFFER = 50_000
 STATS_SECONDS = 600
-# Refresh the connection token this long before it expires.
-REFRESH_MARGIN = 60
+# The token endpoint is slow from the server: measured 2026-10-11, 6 of 10
+# requests took ~19.7 s and one died on a 522 at ~39 s. So the timeout is
+# generous, the refresh runs in a thread (the socket keeps answering pings
+# meanwhile), and it starts at half the token's lifetime, leaving the other
+# half for retries.
+TOKEN_TIMEOUT = 45
 REFRESH_RETRY = 10
 MAX_BACKOFF = 60
 
@@ -70,6 +75,7 @@ class MarketCsgoSalesFeed:
         self._command_id = 0
         self._stats = dict.fromkeys(("received", "empty", "outside", "stored", "duplicate"), 0)
         self._stats_at = clock.monotonic()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token")
 
     def run(self) -> None:
         """Listen until SIGTERM / SIGINT, reconnecting on any failure."""
@@ -101,6 +107,7 @@ class MarketCsgoSalesFeed:
             self._sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF)
         self._flush()
+        self._executor.shutdown(wait=False, cancel_futures=True)
         logger.info("sales feed: stopped")
 
     def _request_stop(self, signum, frame) -> None:
@@ -115,25 +122,30 @@ class MarketCsgoSalesFeed:
     # -- connection -------------------------------------------------------
 
     def _listen(self) -> None:
+        # Before opening the socket: the token can take tens of seconds, and an
+        # open socket that sends nothing for that long may be closed on us.
+        token = self._token()
         with connect(WS_URL, additional_headers=HEADERS, open_timeout=15, max_size=2**22) as ws:
-            reply = self._call(ws, {"connect": {"name": "js", "token": self._token()}})
+            reply = self._call(ws, {"connect": {"name": "js", "token": token}})
             ttl = reply["connect"].get("ttl")
             ping = reply["connect"].get("ping", 25)
             self._call(ws, {"subscribe": {"channel": CHANNEL}})
             logger.info("sales feed: subscribed to %s (token ttl %ss)", CHANNEL, ttl)
 
-            refresh_at = clock.monotonic() + ttl - REFRESH_MARGIN if ttl else None
+            refresh_at = clock.monotonic() + ttl / 2 if ttl else None
+            pending: Future | None = None
             last_frame = clock.monotonic()
             last_flush = clock.monotonic()
             while not self._stop:
                 now = clock.monotonic()
-                if refresh_at and now >= refresh_at:
-                    # The token endpoint sometimes takes longer than the timeout.
-                    # The current token is still good for REFRESH_MARGIN seconds,
-                    # so retry instead of dropping a working connection.
+                if pending is None and refresh_at and now >= refresh_at:
+                    pending = self._executor.submit(self._token)
+                if pending is not None and pending.done():
                     try:
-                        token = self._token()
+                        token = pending.result()
                     except requests.RequestException as e:
+                        # The current token is still valid: retry rather than
+                        # drop a working connection.
                         logger.warning(
                             "sales feed: token refresh failed (%s), retrying in %ds",
                             type(e).__name__, REFRESH_RETRY,
@@ -142,7 +154,8 @@ class MarketCsgoSalesFeed:
                     else:
                         self._command_id += 1
                         ws.send(json.dumps({"id": self._command_id, "refresh": {"token": token}}))
-                        refresh_at = now + ttl - REFRESH_MARGIN
+                        refresh_at = now + ttl / 2
+                    pending = None
                 if now - last_flush >= FLUSH_SECONDS or len(self._buffer) >= FLUSH_ROWS:
                     self._flush()
                     last_flush = now
@@ -194,7 +207,7 @@ class MarketCsgoSalesFeed:
         return message
 
     def _token(self) -> str:
-        response = requests.get(TOKEN_URL, headers=HEADERS, timeout=15)
+        response = requests.get(TOKEN_URL, headers=HEADERS, timeout=TOKEN_TIMEOUT)
         response.raise_for_status()
         return response.json()["token"]
 
