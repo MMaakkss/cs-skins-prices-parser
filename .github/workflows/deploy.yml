@@ -1,7 +1,8 @@
 name: deploy
 
-# Build the image, push it to GHCR, pin that exact sha on the VPS and bring the
-# schema up to date. It does NOT start a pass: a full pass is ~4 hours of
+# Build the image, push it to GHCR, pin that exact sha on the VPS, bring the
+# schema up to date and restart the sales feed on the new image. It does NOT
+# start a pass: a full pass is ~4 hours of
 # rate-limited requests and is started by hand (see README, "Running a pass").
 #
 # Manual trigger only. Deploying on every push to main would also run the
@@ -70,3 +71,6 @@ jobs:
             # Runs in a throwaway container; the parser image carries alembic
             # and env.py reads DATABASE_URL from the same environment.
             $COMPOSE run --rm --entrypoint alembic parser upgrade head
+            # After the migration, since the feed writes to the tables it adds.
+            # `up -d` recreates the container only when the image changed.
+            $COMPOSE up -d sales-feed

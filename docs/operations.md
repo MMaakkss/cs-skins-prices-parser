@@ -92,3 +92,95 @@ The consequence worth remembering: **a failure of any kind — 429, crash, OOM
 kill, Ctrl-C, a dropped network — costs at most the page in flight.** The next
 `--all` run over the same filters continues from the recorded offset. Passes
 limited with `--count N` deliberately neither read nor write that offset.
+
+## The market.csgo.com sales feed
+
+`listen market_csgo` holds one websocket to the site's Centrifugo server
+(`wss://market.csgo.com/connection/websocket`, channel `public:history:730`) and
+writes every sale into `sales`. The channel is the one the site's own frontend uses;
+it is not in the API docs and was found in the JS bundle. An anonymous token from
+`GET /api/centrifugo/refresh` is enough, valid 300 s, refreshed in place.
+
+### Why not the API
+
+The keyed `get-list-items-info` returns the last 100 sales of up to 50 names per
+request, but takes ~4 s per name the server has not cached, and batches of 10+
+names regularly die on Cloudflare's 522 after ~39 s. The whole market is ~27,000
+names: over a day of requests, and the 100-sale cap is 3–5 days for liquid items.
+
+The public `prices/class_instance/USD.json` has a `popularity_7d` per class/instance,
+but it only counts sales of instances currently listed: summed per name it was 2–30×
+below the real count (AK-47 Redline FT: 49 vs >140). Rejected.
+
+### Measured 2026-10-05 / 06
+
+| | |
+|---|---|
+| Messages | ~2.2–2.6/s, ~190,000–225,000/day (evening UTC only so far) |
+| Traffic | 1.4 KB/s in |
+| Feed process | 25 MB RSS bare client, **59 MB** with SQLAlchemy (local run); ~0.2% of a core |
+| Disk | 945 rows → 624 kB in a 6-min local run, mostly fixed per-partition overhead; the real per-day size is still to be measured on the server |
+
+### What the numbers are worth
+
+- **Complete.** For 12 items over a 10-minute window, all 174 sales that
+  `get-list-items-info` listed were in the feed, with the same second and the same
+  RUB price.
+- **Duplicates.** The feed sends some sales twice within minutes, and re-sends old
+  ones — mostly 7–8 days later (trade protection ending, presumably), seen up to 18
+  days back. 8 of 8 checkable re-sends matched a real sale. All copies are
+  byte-identical: no sale id, no offset.
+- **So rows are unique on (item, marketplace, second, price).** That also merges
+  real identical sales in the same second. Over 3,400 sales of 34 items' full
+  histories the merge loses **2.1%**; most items 0–3%, cheap items bought in stacks
+  more (Nova Walnut BS 14%, P250 Small Game FN 27%). Without the merge the feed
+  overcounts by ~30%.
+- ~2% of messages are empty (no name, zero price) and are dropped.
+
+### The token endpoint is slow
+
+From the server, `GET /api/centrifugo/refresh` answered 10 requests on 2026-10-11 as:
+6 × 200 in ~19.7 s, 3 × 200 in under 3 s, 1 × 522 at ~39 s. With the first
+deploy's 15 s timeout nearly every refresh failed and dropped the connection; one
+run of failures kept the feed down for ~5 minutes. Since then the token is fetched
+before the socket opens, refreshes run in a thread from half the token's 300 s
+lifetime, with a 45 s timeout and retries every 10 s, while the socket keeps
+answering pings.
+
+### Partitions
+
+Daily on `sold_at`, UTC midnights, named `sales_YYYYMMDD`. The feed keeps
+`SALES_RETENTION_DAYS` (35) days back and 3 ahead: it creates the missing ones at
+start and on the first batch of each UTC day, and drops older ones with
+`DROP TABLE`. Partitioning by sale time rather than arrival time is what lets a
+week-later re-send land next to its original and be merged. Rows outside the window
+are counted as "outside retention" in the stats line and dropped.
+
+## market.csgo.com full-history: exact volume, one item at a time
+
+`full-history/all.json` maps ~29,450 names to ids; `full-history/{id}.json` holds the
+item's last 6,000 sales `[time, RUB, USD, EUR]` and the marketplace's own
+`sales7d` / `sales30d`. No key. Found 2026-10-06.
+
+- **Exact.** The counts matched `get-list-items-info` and, unlike `sales` from the
+  feed, include identical sales in the same second (MAG-7 Firestarter MW 5/20,
+  Redline FT 152/625, Griffin FT 213/741 in 7/30 days).
+- **6,000-sale cap.** Only cases and the cheapest stackables fill a month: D&N Case
+  sells 6,000 in under three days. A full file whose oldest sale falls inside a
+  window makes that window a floor (`+` in `candidates`); Griffin's 6,000 span five
+  months, so its counts are complete.
+- **Cached, sometimes for hours.** Each file carries the time it was generated;
+  `sales_stats.as_of` is that time, not the fetch time.
+- **Slow.** 40 random ids, one at a time: 20 cached (<1 s), 7 slow but fine,
+  13 × 522 after ~39 s. ~16 s per item on average, so the whole market would take
+  ~5 days. `candidates` fetches sequentially with a 0.5 s gap and 3 attempts.
+- From a home connection `all.json` got a 522 where the server got it in 20 s;
+  retries usually succeed because the server finishes building the file anyway.
+
+First use (2026-10-11), items that looked profitable at the TM ask (test prices from 2026-10-05):
+
+| Item | Steam | TM ask | 7d median sale | Profit after 5% |
+|---|---|---|---|---|
+| ST MAG-7 Firestarter MW | $2.55 | $2.87 | $2.68 | $0.00 |
+| P90 Storm FT | $2.11 | $2.34 | $1.90 | −14.6% |
+| Nova Walnut BS | $1.86 | $2.15 | $1.60 | −18.0% |

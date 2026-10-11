@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -94,6 +94,64 @@ class PriceRecord(Base):
 
     item: Mapped["Item"] = relationship(back_populates="prices")
     marketplace: Mapped["Marketplace"] = relationship(back_populates="prices")
+
+
+class Sale(Base):
+    """One completed sale, as a marketplace's live feed reported it.
+
+    Partitioned by day on ``sold_at``; the partitions are created and dropped
+    by the feed itself (``price_compare.feeds.partitions``), so only the last
+    ``SALES_RETENTION_DAYS`` days exist. Volume over a window is ``count(*)``.
+
+    There is no sale id: market.csgo.com's feed carries none, and it sends some
+    sales twice — once when bought and again ~7 days later. The primary key
+    collapses those, at the cost of also collapsing genuinely identical sales
+    in the same second (bulk buys): measured as a 2.1% undercount on average,
+    worse on cheap items bought in stacks (docs/operations.md).
+    """
+
+    __tablename__ = "sales"
+    __table_args__ = {"postgresql_partition_by": "RANGE (sold_at)"}
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
+    marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id"), primary_key=True)
+    sold_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(14, 4), primary_key=True)
+
+
+class SalesStats(Base):
+    """Sales volume of one item as a marketplace itself reported it.
+
+    One row per fetch, so a re-check of the same item adds a row instead of
+    overwriting. Filled from market.csgo.com's per-item ``full-history`` files,
+    which are exact (same-second sales counted, unlike ``sales``) but cost one
+    slow request per item — so only for a short list of candidates.
+    """
+
+    __tablename__ = "sales_stats"
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
+    marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id"), primary_key=True)
+    # When the marketplace generated the numbers, not when we fetched them:
+    # its files are cached, sometimes for hours.
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    sales_7d: Mapped[int] = mapped_column(Integer, nullable=False)
+    sales_30d: Mapped[int] = mapped_column(Integer, nullable=False)
+    # USD medians of the sales in each window; None when there were none.
+    median_7d: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    median_30d: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    # The file holds at most 6,000 sales. When it is full, a window that reaches
+    # past its oldest sale is undercounted: see ``truncated()``.
+    capped: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    oldest_sale: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @staticmethod
+    def truncated(stats: dict, days: int) -> bool:
+        """Whether the count over the last ``days`` is only a floor."""
+        return bool(
+            stats["capped"] and stats["oldest_sale"]
+            and stats["oldest_sale"] > stats["as_of"] - timedelta(days=days)
+        )
 
 
 class ParserState(Base):

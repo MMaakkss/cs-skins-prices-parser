@@ -66,5 +66,26 @@ services:
     # is one, picks the same stream up by container name.
     logging: *default-logging
 
+  sales-feed:
+    # The same image as the parser, running `listen` instead of a pass: a
+    # long-lived process that records every market.csgo.com sale from the
+    # site's live feed (src/price_compare/feeds/market_csgo.py).
+    image: ${PARSER_IMAGE}
+    container_name: cs-parser-sales-feed
+    command: ['listen', 'market_csgo']
+    # Measured at ~25 MB for the bare client; the rest is SQLAlchemy and the
+    # item-name cache.
+    mem_limit: ${SALES_FEED_MEM_LIMIT:-128m}
+    # Unlike the parser this one should always be running: it reconnects by
+    # itself, and nothing it does can provoke a block.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SALES_RETENTION_DAYS: ${SALES_RETENTION_DAYS:-35}
+    logging: *default-logging
+
 volumes:
   postgres_data:

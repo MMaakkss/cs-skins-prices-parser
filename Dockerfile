@@ -1,5 +1,6 @@
 # CS2 price parser. A pass is a batch job: the container runs one CLI
-# invocation and exits, so there is no server process and no EXPOSE.
+# invocation and exits. The sales feed runs the same image as a long-lived
+# `listen` process; it only connects out, so there is no EXPOSE either way.
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
