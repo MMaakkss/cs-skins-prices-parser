@@ -89,6 +89,52 @@ def cmd_prices(args):
         session.close()
 
 
+def cmd_listen(args):
+    from price_compare.feeds.market_csgo import MarketCsgoSalesFeed
+
+    MarketCsgoSalesFeed().run()
+
+
+def cmd_sales(args):
+    from sqlalchemy import text
+
+    from price_compare.db.session import engine
+
+    # Windows are counted back from now, not by calendar day, so the partition
+    # boundaries do not show in the numbers.
+    query = text("""
+        SELECT i.market_hash_name,
+               count(*) FILTER (WHERE s.sold_at > now() - interval '7 days')  AS week,
+               count(*)                                                       AS month,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY s.price)
+                   FILTER (WHERE s.sold_at > now() - interval '7 days')       AS median_week,
+               max(s.sold_at)                                                 AS last_sale
+        FROM sales s
+        JOIN items i ON i.id = s.item_id
+        JOIN marketplaces m ON m.id = s.marketplace_id
+        WHERE m.name = :marketplace
+          AND s.sold_at > now() - interval '30 days'
+          AND (CAST(:name AS text) IS NULL OR i.market_hash_name ILIKE '%' || :name || '%')
+        GROUP BY i.market_hash_name
+        ORDER BY week DESC, month DESC
+        LIMIT :limit
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(query, {
+            "marketplace": args.marketplace, "name": args.name, "limit": args.limit,
+        }).all()
+
+    if not rows:
+        print("No sales found.")
+        return
+
+    print(f"{'Item':<55} {'7d':>6} {'30d':>6} {'Median 7d':>10} {'Last sale'}")
+    print("-" * 100)
+    for name, week, month, median_week, last_sale in rows:
+        median = f"${median_week:.2f}" if median_week is not None else "-"
+        print(f"{name:<55} {week:>6} {month:>6} {median:>10} {last_sale:%Y-%m-%d %H:%M}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="CS2 Skin Price Comparator")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
@@ -112,6 +158,20 @@ def main():
     prices_cmd.add_argument("--marketplace", help="Filter by marketplace")
     prices_cmd.add_argument("--limit", type=int, default=50, help="Max results")
     prices_cmd.set_defaults(func=cmd_prices)
+
+    # listen command
+    listen_cmd = subparsers.add_parser(
+        "listen", help="Record every sale from a marketplace's live feed (runs until stopped)"
+    )
+    listen_cmd.add_argument("marketplace", choices=["market_csgo"], help="Marketplace feed")
+    listen_cmd.set_defaults(func=cmd_listen)
+
+    # sales command
+    sales_cmd = subparsers.add_parser("sales", help="Show sales volume over the last 7 / 30 days")
+    sales_cmd.add_argument("name", nargs="?", help="Filter by item name (partial match)")
+    sales_cmd.add_argument("--marketplace", default="market_csgo", help="Marketplace")
+    sales_cmd.add_argument("--limit", type=int, default=50, help="Max results")
+    sales_cmd.set_defaults(func=cmd_sales)
 
     args = parser.parse_args()
 

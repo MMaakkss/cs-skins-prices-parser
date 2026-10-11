@@ -96,6 +96,29 @@ class PriceRecord(Base):
     marketplace: Mapped["Marketplace"] = relationship(back_populates="prices")
 
 
+class Sale(Base):
+    """One completed sale, as a marketplace's live feed reported it.
+
+    Partitioned by day on ``sold_at``; the partitions are created and dropped
+    by the feed itself (``price_compare.feeds.partitions``), so only the last
+    ``SALES_RETENTION_DAYS`` days exist. Volume over a window is ``count(*)``.
+
+    There is no sale id: market.csgo.com's feed carries none, and it sends some
+    sales twice — once when bought and again ~7 days later. The primary key
+    collapses those, at the cost of also collapsing genuinely identical sales
+    in the same second (bulk buys): measured as a 2.1% undercount on average,
+    worse on cheap items bought in stacks (docs/operations.md).
+    """
+
+    __tablename__ = "sales"
+    __table_args__ = {"postgresql_partition_by": "RANGE (sold_at)"}
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
+    marketplace_id: Mapped[int] = mapped_column(ForeignKey("marketplaces.id"), primary_key=True)
+    sold_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(14, 4), primary_key=True)
+
+
 class ParserState(Base):
     """Where a paginated pass stopped, so the next run resumes instead of
     restarting at 0.

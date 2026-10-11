@@ -35,6 +35,11 @@ DMARKET_REQUEST_DELAY = float(os.getenv("DMARKET_REQUEST_DELAY", "1.0"))
 # 0.25s between requests (4 req/s) keeps a margin.
 MARKET_CSGO_REQUEST_DELAY = float(os.getenv("MARKET_CSGO_REQUEST_DELAY", "0.25"))
 
+# Days of individual sales kept, in daily partitions. A 30-day volume plus
+# market.csgo.com's re-sends of week-old sales, which must land in a partition
+# that still holds the original for the primary key to collapse them.
+SALES_RETENTION_DAYS = int(os.getenv("SALES_RETENTION_DAYS", "35"))
+
 # DMarket Trading API keys (required — DMarket's market API needs signed requests).
 DMARKET_PUBLIC_KEY = os.getenv("DMARKET_PUBLIC_KEY", "")
 DMARKET_SECRET_KEY = os.getenv("DMARKET_SECRET_KEY", "")

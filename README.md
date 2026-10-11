@@ -21,6 +21,9 @@ The architecture is designed for easy addition of new marketplaces: just inherit
 - Filters: exterior (wear), weapon type, search query, price range, count.
 - Both sides of the book where a marketplace publishes them: lowest ask (`ask`) and
   highest buy order (`bid`) — market.csgo.com provides both.
+- **Sales volume** on market.csgo.com: every sale is recorded from the site's live
+  feed by a long-running `listen` process, so `sales` can count sales over the last
+  7 / 30 days.
 - **History accumulation**: each run adds a new price snapshot for an item —
   past values are not overwritten, which makes it possible to analyze trends.
 - Item name normalization (a unified form without altering the name itself), so that
@@ -130,6 +133,28 @@ python -m price_compare prices "AK-47" --marketplace steam --limit 20
 | `--marketplace` | Filter by marketplace (`steam`, `dmarket`, `market_csgo`) |
 | `--limit`       | Max rows (default 50)                         |
 
+### `listen` command — record sales from a live feed
+
+```bash
+python -m price_compare listen market_csgo
+```
+
+Runs until stopped (SIGTERM / Ctrl-C) and writes one row per sale into `sales`. It
+subscribes to market.csgo.com's own websocket feed — undocumented, no API key
+needed — and reconnects by itself. On the server it runs as the `sales-feed`
+service; see "Sales volume" under *Notes and limitations* for what the numbers can
+be trusted for.
+
+### `sales` command — sales volume
+
+```bash
+python -m price_compare sales                    # top 50 by sales in the last 7 days
+python -m price_compare sales "AK-47 | Redline"  # partial name match
+```
+
+Columns: sales in the last 7 and 30 days, the median price over 7 days, the last
+sale. Windows are counted back from now.
+
 ### Logging
 
 Diagnostic messages are emitted via `logging` (level `INFO`).
@@ -149,13 +174,16 @@ server over SSH. The project is self-contained — its own Postgres, volume and
 network — so the same compose file runs unchanged on a laptop.
 
 - `Dockerfile` — the image. A pass is a batch job, so the container runs one CLI
-  invocation and exits.
+  invocation and exits; the sales feed runs the same image as a long-lived
+  `listen` process.
 - `deploy/docker-compose.yml` — what lives at `/home/ubuntu/cs-parser/` on the
-  VPS: `postgres` (kept running) and `parser` (run per pass, then gone).
+  VPS: `postgres` (kept running), `parser` (run per pass, then gone) and
+  `sales-feed` (always running, `restart: unless-stopped`).
 - `deploy/.env.example` — template for `/home/ubuntu/cs-parser/.env`.
 - `.github/workflows/deploy.yml` — manual trigger (Actions → deploy → Run
   workflow). Builds, pushes, pins the sha into `.env` and runs
-  `alembic upgrade head`. It does **not** start a pass.
+  `alembic upgrade head`, then `up -d sales-feed` so the feed runs the new
+  image. It does **not** start a pass.
 
 There is one environment, not a prod/stage pair. A pass is priced in Steam's
 rate-limit budget, and that budget is keyed by the `Accept-Encoding` string and
@@ -169,7 +197,7 @@ Repository secrets the workflow needs: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`.
 
 ### Running a pass
 
-Deploying only updates the image and the schema. A pass is started by hand,
+Deploying updates the image and the schema and restarts the sales feed. A pass is started by hand,
 because a full one is ~3,548 requests at `STEAM_REQUEST_DELAY` seconds apart:
 
 ```bash
@@ -181,6 +209,8 @@ $COMPOSE run --rm parser parse steam --all          # full market, ~4 hours
 $COMPOSE run --rm parser parse steam --count 100    # a quick slice off the top
 $COMPOSE run --rm parser parse market_csgo --all    # two requests, seconds
 $COMPOSE run --rm parser prices "AK-47" --limit 20  # read back what was saved
+$COMPOSE run --rm parser sales "AK-47" --limit 20   # sales over 7 / 30 days
+$COMPOSE logs --tail 50 sales-feed                  # the feed: a stats line every 10 min
 ```
 
 Listings are written page by page as the pass runs, together with the offset to
@@ -197,6 +227,19 @@ for sizing a safe request delay.
 ---
 
 ## Notes and limitations
+
+- **Sales volume (market.csgo.com).** `listen` stores what the site's Centrifugo
+  channel `public:history:730` publishes: name, sale time (to the second) and price.
+  No sale id, float or pattern. Checked against the keyed `get-list-items-info`
+  history: every sale it listed was in the feed. The feed also sends some sales
+  twice and re-sends old ones (mostly ~7 days later), with byte-identical messages,
+  so rows are unique on (item, marketplace, second, price). That also merges real
+  identical sales in the same second — **counts run ~2% low on average**, up to
+  ~15–25% on cheap items bought in stacks. Measurements in
+  [`docs/operations.md`](docs/operations.md).
+- **`sales` keeps only `SALES_RETENTION_DAYS` days (default 35)** in daily UTC
+  partitions, created ahead and dropped by the feed itself. A fresh database has no
+  partitions until the feed has started once.
 
 - **DMarket requires Trading API keys.** DMarket's public market API has moved to
   signed requests (Ed25519). Generate a key pair at `dmarket.com → Settings →
@@ -258,11 +301,14 @@ price_compare/
 │   ├── steam-rate-limits.md     # measured behaviour of Steam's limits
 │   └── operations.md            # what a pass costs: requests, time, disk
 ├── src/price_compare/
-│   ├── cli.py                   # argument parsing, parse/prices commands
+│   ├── cli.py                   # argument parsing, parse/prices/listen/sales
 │   ├── config.py                # reading .env
 │   ├── db/
-│   │   ├── models.py            # Marketplace, Item, PriceRecord, ParserState
+│   │   ├── models.py            # Marketplace, Item, PriceRecord, Sale, ParserState
 │   │   └── session.py           # engine + SessionLocal
+│   ├── feeds/
+│   │   ├── market_csgo.py       # MarketCsgoSalesFeed: live sales -> sales
+│   │   └── partitions.py        # daily partitions of sales, retention
 │   └── parsers/
 │       ├── base.py              # BaseParser: DB persistence, name normalization
 │       ├── steam.py             # SteamParser
@@ -291,6 +337,9 @@ price_compare/
   `price_type` (`ask` = lowest listing, `bid` = highest buy order), `recorded_at`),
   linked to an item and a marketplace. A new record on each run. Steam and DMarket
   produce `ask` only; market.csgo.com produces both.
+- **sales** — one row per sale from a live feed (`item_id`, `marketplace_id`,
+  `sold_at`, `price` in USD), primary key on all four. Partitioned by day on
+  `sold_at`; only the last `SALES_RETENTION_DAYS` days exist.
 - **parser_state** — where a paginated pass stopped (`marketplace`, `filters_key`,
   `next_start`), so a Steam run cut short by a rate limit resumes instead of restarting.
 
