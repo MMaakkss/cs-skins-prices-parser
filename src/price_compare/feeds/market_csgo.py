@@ -48,6 +48,7 @@ MAX_BUFFER = 50_000
 STATS_SECONDS = 600
 # Refresh the connection token this long before it expires.
 REFRESH_MARGIN = 60
+REFRESH_RETRY = 10
 MAX_BACKOFF = 60
 
 
@@ -127,9 +128,21 @@ class MarketCsgoSalesFeed:
             while not self._stop:
                 now = clock.monotonic()
                 if refresh_at and now >= refresh_at:
-                    self._command_id += 1
-                    ws.send(json.dumps({"id": self._command_id, "refresh": {"token": self._token()}}))
-                    refresh_at = now + ttl - REFRESH_MARGIN
+                    # The token endpoint sometimes takes longer than the timeout.
+                    # The current token is still good for REFRESH_MARGIN seconds,
+                    # so retry instead of dropping a working connection.
+                    try:
+                        token = self._token()
+                    except requests.RequestException as e:
+                        logger.warning(
+                            "sales feed: token refresh failed (%s), retrying in %ds",
+                            type(e).__name__, REFRESH_RETRY,
+                        )
+                        refresh_at = now + REFRESH_RETRY
+                    else:
+                        self._command_id += 1
+                        ws.send(json.dumps({"id": self._command_id, "refresh": {"token": token}}))
+                        refresh_at = now + ttl - REFRESH_MARGIN
                 if now - last_flush >= FLUSH_SECONDS or len(self._buffer) >= FLUSH_ROWS:
                     self._flush()
                     last_flush = now
