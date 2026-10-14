@@ -147,6 +147,22 @@ before the socket opens, refreshes run in a thread from half the token's 300 s
 lifetime, with a 45 s timeout and retries every 10 s, while the socket keeps
 answering pings.
 
+The token is a JWT with `exp` 300 s after issue, so it cannot be fetched ahead and
+kept: any endpoint outage longer than the retry margin takes the feed down with it.
+First three days (2026-10-11..14): 24 disconnects, 32 minutes down in total, ~0.5%.
+All but a minute of that was one stretch on 2026-10-13, when the token endpoint
+answered 522 for ~20 minutes (12:21–12:42) and again for ~5. Since then refreshes
+start a quarter of the way into the token's life (~225 s of retries) and reconnects
+pause at most 15 s, since each failed one already waits ~20 s on the endpoint.
+
+### Rejected messages
+
+The stats line counts messages without a name, sale time or USD price as "empty",
+normally 1–2%. On 2026-10-14 it rose to 17% for several hours and fell back; a live
+capture afterwards found only the usual all-null messages, but nothing recorded what
+the surge was made of. Each stats line is now followed by one sample per kind of
+rejected message, so the next surge shows whether it is noise or a changed format.
+
 ### Partitions
 
 Daily on `sold_at`, UTC midnights, named `sales_YYYYMMDD`. The feed keeps

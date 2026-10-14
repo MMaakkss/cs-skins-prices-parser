@@ -49,12 +49,18 @@ MAX_BUFFER = 50_000
 STATS_SECONDS = 600
 # The token endpoint is slow from the server: measured 2026-10-11, 6 of 10
 # requests took ~19.7 s and one died on a 522 at ~39 s. So the timeout is
-# generous, the refresh runs in a thread (the socket keeps answering pings
-# meanwhile), and it starts at half the token's lifetime, leaving the other
-# half for retries.
+# generous and the refresh runs in a thread (the socket keeps answering pings
+# meanwhile). The token lives 300 s and cannot be stocked up, so the refresh
+# starts a quarter of the way in, leaving ~225 s of retries before it expires.
 TOKEN_TIMEOUT = 45
+REFRESH_AT = 0.25
 REFRESH_RETRY = 10
-MAX_BACKOFF = 60
+# A failed reconnect already spends ~20 s waiting on the token endpoint, so a
+# short pause is enough; a long one only delays coming back once it recovers.
+# Measured 2026-10-13: the endpoint 522'd for ~20 minutes straight.
+MAX_BACKOFF = 15
+# Characters of a rejected message kept as a sample in the stats line.
+SAMPLE_CHARS = 500
 
 
 class FeedError(Exception):
@@ -75,6 +81,9 @@ class MarketCsgoSalesFeed:
         self._command_id = 0
         self._stats = dict.fromkeys(("received", "empty", "outside", "stored", "duplicate"), 0)
         self._stats_at = clock.monotonic()
+        # One example per kind of rejected message, logged with the stats, so a
+        # surge of rejects can be told apart from a changed message format.
+        self._rejected: dict[str, tuple[int, str]] = {}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token")
 
     def run(self) -> None:
@@ -132,7 +141,7 @@ class MarketCsgoSalesFeed:
             self._call(ws, {"subscribe": {"channel": CHANNEL}})
             logger.info("sales feed: subscribed to %s (token ttl %ss)", CHANNEL, ttl)
 
-            refresh_at = clock.monotonic() + ttl / 2 if ttl else None
+            refresh_at = clock.monotonic() + ttl * REFRESH_AT if ttl else None
             pending: Future | None = None
             last_frame = clock.monotonic()
             last_flush = clock.monotonic()
@@ -154,7 +163,7 @@ class MarketCsgoSalesFeed:
                     else:
                         self._command_id += 1
                         ws.send(json.dumps({"id": self._command_id, "refresh": {"token": token}}))
-                        refresh_at = now + ttl / 2
+                        refresh_at = now + ttl * REFRESH_AT
                     pending = None
                 if now - last_flush >= FLUSH_SECONDS or len(self._buffer) >= FLUSH_ROWS:
                     self._flush()
@@ -222,8 +231,18 @@ class MarketCsgoSalesFeed:
             (p.get("price") for p in payload.get("prices") or [] if p.get("currency") == "USD"),
             None,
         )
-        if data.get("type") != "history" or not name or not sale_time or not price or price <= 0:
+        reason = (
+            "type" if data.get("type") != "history"
+            else "no name" if not name
+            else "no sale_time" if not sale_time
+            else "no USD price" if price is None
+            else "price <= 0" if not price or price <= 0
+            else None
+        )
+        if reason:
             self._stats["empty"] += 1
+            count, sample = self._rejected.get(reason, (0, None))
+            self._rejected[reason] = (count + 1, sample or json.dumps(data, ensure_ascii=False)[:SAMPLE_CHARS])
             return
         self._buffer.append((
             BaseParser._normalize_name(name),
@@ -335,5 +354,8 @@ class MarketCsgoSalesFeed:
             "sales feed: %d received, %d stored, %d duplicate, %d empty, %d outside retention",
             s["received"], s["stored"], s["duplicate"], s["empty"], s["outside"],
         )
+        for reason, (count, sample) in sorted(self._rejected.items()):
+            logger.info("sales feed: rejected %d as %r, e.g. %s", count, reason, sample)
+        self._rejected = {}
         self._stats = dict.fromkeys(s, 0)
         self._stats_at = clock.monotonic()
